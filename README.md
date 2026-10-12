@@ -9,18 +9,6 @@ Provide a video <b>topic</b> or <b>keyword</b>, and Script-to-Reality Renderer S
 
 </div>
 
-## Screenshots 🖥️
-
-<h4 align="center">WebUI</h4>
-
-![](docs/webui-en.jpg)
-
-<h4 align="center">API</h4>
-
-![](docs/api.jpg)
-
----
-
 ## Features 🎯
 
 ### Creation Workflows
