@@ -174,6 +174,16 @@ def _authorized_budget(value: Any) -> Decimal:
     return requested
 
 
+def project_budget(value: Any) -> Decimal:
+    """A preconfigured project budget. This is separate from the single-clip ceiling."""
+    if value in (None, ""):
+        return Decimal("1.00")
+    requested = _money(value)
+    if requested > Decimal("100"):
+        return Decimal("100")
+    return requested
+
+
 def quote(body: dict[str, Any] | None = None, session: requests.Session | None = None) -> dict[str, Any]:
     """Price one clip. This never submits a generation job."""
     payload = body if isinstance(body, dict) else {}
@@ -184,7 +194,8 @@ def quote(body: dict[str, Any] | None = None, session: requests.Session | None =
         duration = int(payload.get("duration") or DEFAULT_DURATION)
     except (TypeError, ValueError) as exc:
         raise OpenRouterVideoError("Duration must be a whole number of seconds.") from exc
-    budget = _authorized_budget(payload.get("budget_usd"))
+    project = payload.get("project_budget") is True
+    budget = project_budget(payload.get("budget_usd")) if project else _authorized_budget(payload.get("budget_usd"))
     models = list_models(session)
     model = _find_model(models, model_id)
     _require_choice(model, "supported_durations", duration, "Duration")
@@ -192,6 +203,7 @@ def quote(body: dict[str, Any] | None = None, session: requests.Session | None =
     _require_choice(model, "supported_aspect_ratios", aspect, "Aspect ratio")
     priced = estimate_cost(model, duration, resolution)
     estimated = _money(priced["estimated_usd"])
+    affordable = int(budget / estimated) if estimated > 0 else 0
     return {
         "model": model_id,
         "name": str(model.get("name") or model_id),
@@ -204,7 +216,8 @@ def quote(body: dict[str, Any] | None = None, session: requests.Session | None =
         "estimated_usd": priced["estimated_usd"],
         "budget_usd": _format_money(budget),
         "within_budget": estimated <= budget,
-        "requires_approval": True,
+        "max_scenes": min(6, affordable) if project else 1,
+        "requires_approval": not project,
         "submitted": False,
     }
 
@@ -374,3 +387,66 @@ def generate_for_task(
     destination = os.path.join(utils.task_dir(task_id), "openrouter-video.mp4")
     _download(client, _content_url(job_id, status.get("unsigned_urls")), destination)
     return [destination]
+
+
+def generate_clip(
+    task_id: str,
+    *,
+    prompt: str,
+    model_id: str,
+    resolution: str,
+    aspect: str,
+    duration: int,
+    budget: Decimal,
+    destination: str,
+    existing_job_id: str = "",
+    model: dict[str, Any] | None = None,
+    session: requests.Session | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Submit one clip, or resume a saved job id without posting again.
+
+    ``budget`` is the money still available. An existing job is polled even when
+    that remainder would not pay for a new clip.
+    """
+    text = str(prompt or "").strip()
+    if not text:
+        raise OpenRouterVideoError("A scene prompt is required before a clip can be submitted.")
+    client = session or requests.Session()
+    row = model if isinstance(model, dict) else _find_model(list_models(client), model_id)
+    _require_choice(row, "supported_durations", duration, "Duration")
+    _require_choice(row, "supported_resolutions", resolution, "Resolution")
+    _require_choice(row, "supported_aspect_ratios", aspect, "Aspect ratio")
+    estimated = _money(estimate_cost(row, duration, resolution)["estimated_usd"])
+    job_id = str(existing_job_id or "").strip()
+    if not job_id:
+        if estimated > budget:
+            raise OpenRouterVideoBudgetError(
+                f"budget-exhausted: this scene is estimated at ${_format_money(estimated)}, "
+                f"above the ${_format_money(budget)} still available. It was not submitted."
+            )
+        job_id = _submit_once(
+            client,
+            {
+                "model": model_id,
+                "prompt": text[:8000],
+                "duration": duration,
+                "resolution": resolution,
+                "aspect_ratio": aspect,
+            },
+        )
+        logger.info("OpenRouter video job created: task_id=%s job_id=%s model=%s", task_id, job_id, model_id)
+        _remember_job(task_id, job_id, model_id)
+        submitted = True
+    else:
+        submitted = False
+    status = _poll(client, job_id, sleep, clock)
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    _download(client, _content_url(job_id, status.get("unsigned_urls")), destination)
+    return {
+        "path": destination,
+        "job_id": job_id,
+        "estimated_usd": _format_money(estimated),
+        "submitted": submitted,
+    }

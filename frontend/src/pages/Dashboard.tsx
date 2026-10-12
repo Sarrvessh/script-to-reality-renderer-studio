@@ -230,8 +230,11 @@ export function Dashboard() {
     budget_usd: string;
     within_budget: boolean;
     submitted: boolean;
+    max_scenes?: number;
   } | null>(null);
-  const [orApproved, setOrApproved] = useState(false);
+  const [projectBudget, setProjectBudget] = useState("1.00");
+  const [visualStyle, setVisualStyle] = useState("");
+  const [sceneRetries, setSceneRetries] = useState(1);
   const [orNotice, setOrNotice] = useState("");
   const [opened, setOpened] = useState("");
 
@@ -351,7 +354,6 @@ export function Dashboard() {
 
   useEffect(() => {
     if (draft?.video_source !== "openrouter") return;
-    setOrApproved(false);
     setOrQuote(null);
     const timer = window.setTimeout(() => {
       quoteOpenRouterVideo({
@@ -359,7 +361,8 @@ export function Dashboard() {
         resolution: orResolution,
         duration: orDuration,
         aspect_ratio: draft.aspect,
-        budget_usd: "0.10",
+        budget_usd: projectBudget || "0",
+        project_budget: true,
       })
         .then((quote) => {
           setOrQuote(quote);
@@ -371,7 +374,7 @@ export function Dashboard() {
         });
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [draft?.video_source, draft?.aspect, orModel, orResolution, orDuration]);
+  }, [draft?.video_source, draft?.aspect, orModel, orResolution, orDuration, projectBudget]);
 
   function patch(next: Partial<Draft>) {
     setDraft((current) => current && ({ ...current, ...next }));
@@ -587,8 +590,11 @@ export function Dashboard() {
       openrouter_video_model: draft.video_source === "openrouter" ? orModel : "",
       openrouter_video_resolution: draft.video_source === "openrouter" ? orResolution : "480p",
       openrouter_video_duration: draft.video_source === "openrouter" ? orDuration : 5,
-      openrouter_video_approved: draft.video_source === "openrouter" && orApproved && Boolean(orQuote?.within_budget) && orQuote?.submitted === false,
-      openrouter_video_budget_usd: 0.1,
+      openrouter_video_approved: false,
+      openrouter_video_budget_usd: Number(projectBudget) || 0,
+      project_budget_usd: Number(projectBudget) || 0,
+      visual_style: visualStyle,
+      max_scene_retries: sceneRetries,
       video_clip_speed: draft.video_clip_speed,
       video_count: draft.video_count,
       voice_name: draft.voice_mode === "none" || draft.voice_mode === "upload" ? "no-voice" : draft.voice_name,
@@ -689,16 +695,17 @@ export function Dashboard() {
       orQuote
       && orQuote.submitted === false
       && orQuote.within_budget
+      && (orQuote.max_scenes ?? 0) >= 1
       && orQuote.model === orModel
       && orQuote.resolution === orResolution
       && orQuote.duration === orDuration
       && orQuote.aspect_ratio === draft.aspect
-      && orApproved,
+      && Math.abs(Number(orQuote.budget_usd) - Number(projectBudget)) < 0.001
     );
     if (draft.video_source === "openrouter" && !openRouterReady) {
       setError(orQuote && !orQuote.within_budget
-        ? `This clip is estimated at $${orQuote.estimated_usd}, above the $${orQuote.budget_usd} budget. It was not submitted.`
-        : "Review the OpenRouter estimate and approve the charge before generating.");
+        ? `One scene is estimated at $${orQuote.estimated_usd}, above the $${orQuote.budget_usd} project budget. Nothing was submitted.`
+        : "Wait for the project estimate before generating.");
       return;
     }
     setBusy("Starting the video…");
@@ -988,15 +995,27 @@ export function Dashboard() {
                   {orQuote.rate_unit === "second" ? ` ($${orQuote.rate_usd} per second)` : ""}
                   {" · "}budget ${orQuote.budget_usd}
                   {orQuote.within_budget ? " · within budget" : " · over budget"}
+                  {typeof orQuote.max_scenes === "number" ? ` · up to ${orQuote.max_scenes} scenes` : ""}
                   {orQuote.submitted ? "" : " · not submitted"}
                 </p>
               ) : <p className="meta">{orNotice || "Checking the OpenRouter price…"}</p>}
-              <Toggle
-                id="or-charge"
-                label="Approve this charge"
-                checked={orApproved}
-                onChange={(value) => setOrApproved(value && Boolean(orQuote?.within_budget))}
-              />
+              <div className="row">
+                <label htmlFor="project-budget">Project budget (USD)</label>
+                <input id="project-budget" className="field" inputMode="decimal" value={projectBudget} onChange={(event) => setProjectBudget(event.target.value)} />
+              </div>
+              <div className="row">
+                <label htmlFor="visual-style">Visual style</label>
+                <input id="visual-style" className="field" value={visualStyle} placeholder="cinematic, natural light" onChange={(event) => setVisualStyle(event.target.value)} />
+              </div>
+              <div className="row">
+                <label htmlFor="scene-retries">Retries per scene</label>
+                <select id="scene-retries" className="select" value={sceneRetries} onChange={(event) => setSceneRetries(Number(event.target.value))}>
+                  <option value={0}>0</option>
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={3}>3</option>
+                </select>
+              </div>
             </div>
           ) : null}
           {draft.video_source !== "local" && draft.video_source !== "loomloom" && draft.video_source !== "openrouter" ? (
@@ -1314,6 +1333,18 @@ export function Dashboard() {
                   ? `Generation failed${task.failed_stage ? ` during ${task.failed_stage}` : ""}. ${task.error || "Check the API log for the stage that stopped."}`
                   : `${progressLabel(task.progress)} · ${task.progress}%`}
               </p>
+              {task.autonomous_spent_usd ? <p className="meta">Spent ${task.autonomous_spent_usd}{task.cv_report?.disclaimer ? `. ${task.cv_report.disclaimer}` : ""}</p> : null}
+              {task.scene_status?.length ? (
+                <ul className="meta">
+                  {task.scene_status.map((scene) => (
+                    <li key={`${scene.index}-${scene.status}`}>
+                      Scene {Number(scene.index) + 1}: {scene.status}
+                      {typeof scene.score === "number" ? ` · score ${scene.score.toFixed(2)}` : ""}
+                      {scene.warnings?.length ? ` · ${scene.warnings.join("; ")}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
               {video ? (
                 <>
                   <video className={`player${draft.aspect === "16:9" ? " wide" : ""}`} controls src={video} />

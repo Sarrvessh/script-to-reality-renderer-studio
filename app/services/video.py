@@ -970,6 +970,7 @@ def combine_videos(
     source_groups: dict[str, str] | None = None,
     used_video_paths: List[str] | None = None,
     progress_callback: Callable[[float], None] | None = None,
+    allow_loop: bool = True,
 ) -> str:
     # Pydantic leaves this optional default as the string "random" unless
     # explicitly provided. Normalize it once for all downstream enum access.
@@ -1204,9 +1205,23 @@ def combine_videos(
                     max_clip_duration,
                     source_duration / normalized_clip_speed,
                 )
+                leftover = remaining_duration - batch_duration
+                if not allow_loop and output_duration > leftover:
+                    trimmed_source = max(leftover, 0.05) * normalized_clip_speed
+                    subclipped_item = SubClippedVideoClip(
+                        file_path=subclipped_item.file_path,
+                        start_time=subclipped_item.start_time,
+                        end_time=min(subclipped_item.end_time, subclipped_item.start_time + trimmed_source),
+                        width=subclipped_item.width,
+                        height=subclipped_item.height,
+                        source_file_path=subclipped_item.source_file_path,
+                    )
+                    output_duration = leftover
                 batch.append((candidate_index, subclipped_item))
                 batch_duration += output_duration
                 candidate_index += 1
+                if not allow_loop and batch_duration >= remaining_duration - 1e-3:
+                    break
             if not batch:
                 break
             for processed_clip in executor.map(process_clip_in_task_scope, batch):
@@ -1225,8 +1240,13 @@ def combine_videos(
                 )
             next_candidate_index = candidate_index
     
-    # loop processed clips until the video duration covers the audio duration and the small safety margin.
-    if video_duration < required_video_duration:
+    # Stock footage may repeat to fill the narration. AI footage must not.
+    if video_duration < required_video_duration - 0.05 and not allow_loop:
+        raise RuntimeError(
+            f"AI footage covers {video_duration:.2f}s of the required {required_video_duration:.2f}s. "
+            "Clips were not repeated."
+        )
+    if allow_loop and video_duration < required_video_duration:
         logger.warning(
             f"video duration ({video_duration:.2f}s) is shorter than required duration "
             f"({required_video_duration:.2f}s), looping clips to match audio length."

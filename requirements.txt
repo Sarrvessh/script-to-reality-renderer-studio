@@ -1,5 +1,11 @@
 # Keep legacy pip install support; primary deps moved to pyproject.toml / uv.lock.
 moviepy==2.2.1
+opencv-python-headless==4.10.0.84
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+open-clip-torch
+ultralytics
 streamlit==1.59.1
 streamlit-tour==1.1.0
 edge_tts==7.2.7

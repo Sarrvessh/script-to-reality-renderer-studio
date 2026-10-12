@@ -166,6 +166,12 @@ class VideoParams(BaseModel):
     openrouter_video_duration: int = Field(default=5, ge=1, le=60)
     openrouter_video_approved: bool = False
     openrouter_video_budget_usd: float = Field(default=0.10, ge=0, le=100)
+    project_budget_usd: float = Field(default=1.0, ge=0, le=100)
+    visual_style: str = Field(default="", max_length=200)
+    max_scene_retries: int = Field(default=1, ge=0, le=3)
+    semantic_threshold: float = Field(default=0.24, ge=0, le=1)
+    cv_failure_policy: str = Field(default="fail", max_length=32)
+    cv_terminal_policy: str = Field(default="fail", max_length=32)
 
 
 class SubtitleRequest(BaseModel):

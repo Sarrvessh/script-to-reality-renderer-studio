@@ -195,6 +195,9 @@ export type RenderTask = {
   failed_stage?: string;
   video_subject?: string;
   params?: Record<string, unknown>;
+  autonomous_spent_usd?: string;
+  scene_status?: { index: number; status: string; score?: number; warnings?: string[] }[];
+  cv_report?: { spent_usd?: string; disclaimer?: string; terminal?: string };
 };
 
 export type LibraryItem = {
