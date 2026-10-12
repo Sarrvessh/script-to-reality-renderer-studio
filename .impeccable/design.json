@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-12T13:10:00+05:30",
+  "title": "Design System: Script-to-Reality Renderer Studio",
+  "colors": {
+    "canvas": "#f5f5f7",
+    "card": "#ffffff",
+    "ink": "#1d1d1f",
+    "muted": "#6e6e73",
+    "accent": "#0071e3",
+    "link": "#0066cc",
+    "danger": "#d70015"
+  },
+  "extensions": {
+    "colorMeta": {
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Canvas",
+        "canonical": "#f5f5f7"
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#1d1d1f"
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Blue",
+        "canonical": "#0071e3"
+      },
+      "danger": {
+        "role": "danger",
+        "displayName": "Danger",
+        "canonical": "#d70015"
+      }
+    },
+    "typographyMeta": {
+      "body": { "displayName": "System", "purpose": "All interface text." },
+      "title": { "displayName": "Title", "purpose": "Page titles." }
+    }
+  },
+  "components": {
+    "button-primary": {
+      "backgroundColor": "{colors.accent}",
+      "textColor": "#ffffff",
+      "rounded": { "full": "980px" }
+    },
+    "card": {
+      "backgroundColor": "{colors.card}",
+      "rounded": { "md": "12px" }
+    }
+  }
+}
