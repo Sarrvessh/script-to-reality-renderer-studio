@@ -182,7 +182,7 @@ def test_rejected_takes_are_not_assembled(ready):
     def reject(_path, _prompt):
         return {"accepted": False, "score": 0.1, "warnings": ["weak match"], "refinement": "Show the boat closer.", "metrics": {}}
 
-    with pytest.raises(autonomous.AutonomousError):
+    with pytest.raises(autonomous.AutonomousError, match="kept"):
         autonomous.generate_for_task(
             "task-1",
             _params(project_budget_usd=0.30, max_scene_retries=1),
@@ -192,8 +192,47 @@ def test_rejected_takes_are_not_assembled(ready):
             analyze=reject,
         )
     posts = [call for call in session.calls if call[0] == "POST"]
-    assert len(posts) == 2
+    assert len(posts) == 3
     assert state.task["autonomous_terminal"] == "failed"
+    assert state.task["scene_status"][0]["status"] == "rejected"
+    assert "weak match" in state.task["scene_status"][0]["warnings"]
+
+
+def test_a_rejected_scene_is_retried_after_the_other_scenes(ready):
+    session, state = ready
+    state.task["storyboard"] = {
+        "scenes": [
+            {"index": 0, "narration": "A paper boat drifts.", "visual_prompt": "A paper boat on a pond.", "duration": 5},
+            {"index": 1, "narration": "The boat reaches the reeds.", "visual_prompt": "A paper boat beside reeds.", "duration": 5},
+        ],
+        "script": "A paper boat drifts.",
+        "source": "script",
+    }
+    calls = {"n": 0}
+
+    def analyze(_path, _prompt):
+        calls["n"] += 1
+        if calls["n"] in (1, 2):
+            return {"accepted": False, "score": 0.2, "warnings": ["weak match"], "refinement": "Show the boat closer.", "metrics": {}}
+        return {"accepted": True, "score": 0.9, "warnings": [], "refinement": "", "metrics": {}}
+
+    paths = autonomous.generate_for_task(
+        "task-1",
+        _params(project_budget_usd=1, max_scene_retries=1),
+        session=session,
+        sleep=lambda _seconds: None,
+        clock=lambda: 0,
+        analyze=analyze,
+    )
+    posts = [call for call in session.calls if call[0] == "POST"]
+    prompts = [call[2]["prompt"] for call in posts]
+    assert len(posts) == 4
+    assert prompts[2].startswith("A paper boat beside reeds")
+    assert prompts[3].startswith("A paper boat on a pond")
+    assert len(paths) == 2
+    assert "scene-0-take-2.mp4" in paths[0].replace("\\", "/")
+    assert "scene-1-take-0.mp4" in paths[1].replace("\\", "/")
+    assert state.task["autonomous_terminal"] == "completed"
 
 
 def test_narration_coverage_fails_before_any_submission_when_the_budget_is_short(ready):

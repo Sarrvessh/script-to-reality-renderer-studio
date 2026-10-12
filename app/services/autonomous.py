@@ -201,143 +201,179 @@ def _generate(task_id, params, video_script, audio_duration, *, session, sleep, 
             failure_policy=failure_policy,
         )
     )
-    chosen = []
-    reports = []
+    history: list[dict[str, Any]] = []
+    accepted: dict[int, dict[str, Any]] = {}
     task_dir = utils.task_dir(task_id)
+
+    def _one_take(index: int, take: int, prompt: str, duration: int, *, allow_budget_skip: bool) -> dict[str, Any] | None:
+        nonlocal jobs
+        estimate = _price(model, duration, resolution)
+        prior = next((row for row in jobs if int(row.get("scene", -1)) == index and int(row.get("take", -1)) == take), None)
+        destination = os.path.join(task_dir, f"scene-{index}-take-{take}.mp4")
+        existing_job = str((prior or {}).get("job_id") or "")
+        existing_path = str((prior or {}).get("path") or "")
+        spent = _spent_from(jobs)
+        if existing_path and os.path.isfile(existing_path):
+            clip = {
+                "path": existing_path,
+                "job_id": existing_job,
+                "estimated_usd": str((prior or {}).get("estimated_usd") or openrouter_video._format_money(estimate)),
+                "submitted": False,
+            }
+        else:
+            remaining = budget - spent
+            if not existing_job and estimate > remaining:
+                if allow_budget_skip:
+                    logger.info("cv scene=%s take=%s skipped reason=budget remaining=%s", index, take, openrouter_video._format_money(remaining))
+                    return None
+                _finish(task_id, history, spent, jobs, "budget-exhausted")
+                raise openrouter_video.OpenRouterVideoBudgetError(
+                    "budget-exhausted: the remaining budget cannot pay for another scene. "
+                    f"{len(accepted)} accepted clip(s) were kept. No further clip was submitted."
+                )
+            try:
+                clip = openrouter_video.generate_clip(
+                    task_id,
+                    prompt=prompt,
+                    model_id=model_id,
+                    resolution=resolution,
+                    aspect=aspect,
+                    duration=duration,
+                    budget=remaining if not existing_job else budget,
+                    destination=destination,
+                    existing_job_id=existing_job,
+                    model=model,
+                    session=client,
+                    sleep=sleep,
+                    clock=clock,
+                )
+            except openrouter_video.OpenRouterVideoError as exc:
+                job_id = str(exc.job_id or _read(task_id).get("openrouter_video_job_id") or "")
+                if job_id and not any(str(row.get("job_id") or "") == job_id for row in jobs):
+                    jobs.append({
+                        "scene": index,
+                        "take": take,
+                        "job_id": job_id,
+                        "path": "",
+                        "status": "submitted",
+                        "estimated_usd": openrouter_video._format_money(estimate),
+                    })
+                    _write(task_id, autonomous_jobs=jobs, autonomous_spent_usd=openrouter_video._format_money(_spent_from(jobs)))
+                raise
+        playable = cv_engine.validate_playable(clip["path"])
+        if not playable["playable"]:
+            report = {"accepted": False, "score": 0.0, "warnings": ["unreadable video"], "metrics": playable, "disclaimer": cv_engine.DISCLAIMER}
+        else:
+            report = checker(clip["path"], prompt)
+        report = dict(report)
+        report["scene"] = index
+        report["take"] = take
+        report["job_id"] = clip["job_id"]
+        row = {
+            "scene": index,
+            "take": take,
+            "job_id": clip["job_id"],
+            "path": clip["path"],
+            "status": "accepted" if report.get("accepted") else "rejected",
+            "estimated_usd": clip["estimated_usd"],
+        }
+        jobs = [item for item in jobs if not (int(item.get("scene", -1)) == index and int(item.get("take", -1)) == take)]
+        jobs.append(row)
+        spent = _spent_from(jobs)
+        metrics = report.get("metrics") or {}
+        history.append(report)
+        logger.info(
+            "cv scene=%s take=%s semantic_backend=%s semantic=%s detector=%s objects=%s flow=%s blur=%s score=%s decision=%s reasons=%s spent=%s",
+            index,
+            take,
+            metrics.get("semantic_backend"),
+            metrics.get("semantic_similarity"),
+            metrics.get("detector"),
+            metrics.get("objects"),
+            metrics.get("mean_flow"),
+            metrics.get("blur"),
+            report.get("score"),
+            "accepted" if report.get("accepted") else "rejected",
+            ",".join(report.get("warnings") or []) or "-",
+            openrouter_video._format_money(spent),
+        )
+        _write(task_id, autonomous_jobs=jobs, autonomous_spent_usd=openrouter_video._format_money(spent), scene_status=_statuses(history))
+        if report.get("capability_failure"):
+            _finish(task_id, history, spent, jobs, "failed")
+            raise AutonomousError(str(report.get("refinement") or "CV model unavailable. The scene was not regenerated."))
+        if not (report.get("accepted") and cv_engine.validate_playable(clip["path"])["playable"]):
+            return None
+        output_path = clip["path"]
+        crops = list(metrics.get("reframe") or [])
+        if crops:
+            reframed = os.path.join(task_dir, f"scene-{index}-take-{take}-reframed.mp4")
+            output_path = cv_engine.apply_reframe(clip["path"], crops[0], reframed)
+            if output_path != clip["path"]:
+                metrics["reframe_applied"] = True
+        return {"path": output_path, "score": float(report.get("score") or 0), "report": report, "refinement": report.get("refinement") or ""}
+
+    deferred = []
     for scene in scenes:
         index = int(scene["index"])
         prompt = str(scene.get("visual_prompt") or scene.get("narration") or "")
+        base_prompt = prompt
         duration = int(scene.get("duration") or openrouter_video.DEFAULT_DURATION)
-        estimate = _price(model, duration, resolution)
         accepted_take = None
         for take in range(retries + 1):
-            prior = next((row for row in jobs if int(row.get("scene", -1)) == index and int(row.get("take", -1)) == take), None)
-            destination = os.path.join(task_dir, f"scene-{index}-take-{take}.mp4")
-            existing_job = str((prior or {}).get("job_id") or "")
-            existing_path = str((prior or {}).get("path") or "")
-            spent = _spent_from(jobs)
-            if existing_path and os.path.isfile(existing_path):
-                clip = {
-                    "path": existing_path,
-                    "job_id": existing_job,
-                    "estimated_usd": str((prior or {}).get("estimated_usd") or openrouter_video._format_money(estimate)),
-                    "submitted": False,
-                }
-            else:
-                remaining = budget - spent
-                if not existing_job and estimate > remaining:
-                    _finish(task_id, reports, spent, jobs, "budget-exhausted")
-                    raise openrouter_video.OpenRouterVideoBudgetError(
-                        "budget-exhausted: the remaining budget cannot pay for another scene. No further clip was submitted."
-                    )
-                try:
-                    clip = openrouter_video.generate_clip(
-                        task_id,
-                        prompt=prompt,
-                        model_id=model_id,
-                        resolution=resolution,
-                        aspect=aspect,
-                        duration=duration,
-                        budget=remaining if not existing_job else budget,
-                        destination=destination,
-                        existing_job_id=existing_job,
-                        model=model,
-                        session=client,
-                        sleep=sleep,
-                        clock=clock,
-                    )
-                except openrouter_video.OpenRouterVideoError as exc:
-                    job_id = str(exc.job_id or _read(task_id).get("openrouter_video_job_id") or "")
-                    if job_id and not any(str(row.get("job_id") or "") == job_id for row in jobs):
-                        jobs.append({
-                            "scene": index,
-                            "take": take,
-                            "job_id": job_id,
-                            "path": "",
-                            "status": "submitted",
-                            "estimated_usd": openrouter_video._format_money(estimate),
-                        })
-                        _write(task_id, autonomous_jobs=jobs, autonomous_spent_usd=openrouter_video._format_money(_spent_from(jobs)))
-                    raise
-            playable = cv_engine.validate_playable(clip["path"])
-            if not playable["playable"]:
-                report = {"accepted": False, "score": 0.0, "warnings": ["unreadable video"], "metrics": playable, "disclaimer": cv_engine.DISCLAIMER}
-            else:
-                report = checker(clip["path"], prompt)
-            report = dict(report)
-            report["scene"] = index
-            report["take"] = take
-            report["job_id"] = clip["job_id"]
-            row = {
-                "scene": index,
-                "take": take,
-                "job_id": clip["job_id"],
-                "path": clip["path"],
-                "status": "accepted" if report.get("accepted") else "rejected",
-                "estimated_usd": clip["estimated_usd"],
-            }
-            jobs = [item for item in jobs if not (int(item.get("scene", -1)) == index and int(item.get("take", -1)) == take)]
-            jobs.append(row)
-            spent = _spent_from(jobs)
-            metrics = report.get("metrics") or {}
-            logger.info(
-                "cv scene=%s take=%s semantic_backend=%s semantic=%s detector=%s objects=%s flow=%s blur=%s score=%s decision=%s reasons=%s spent=%s",
-                index,
-                take,
-                metrics.get("semantic_backend"),
-                metrics.get("semantic_similarity"),
-                metrics.get("detector"),
-                metrics.get("objects"),
-                metrics.get("mean_flow"),
-                metrics.get("blur"),
-                report.get("score"),
-                "accepted" if report.get("accepted") else "rejected",
-                ",".join(report.get("warnings") or []) or "-",
-                openrouter_video._format_money(spent),
-            )
-            _write(task_id, autonomous_jobs=jobs, autonomous_spent_usd=openrouter_video._format_money(spent), scene_status=_statuses(reports + [report]))
-            if report.get("capability_failure"):
-                _finish(task_id, reports + [report], spent, jobs, "failed")
-                raise AutonomousError(str(report.get("refinement") or "CV model unavailable. The scene was not regenerated."))
-            if report.get("accepted") and cv_engine.validate_playable(clip["path"])["playable"]:
-                output_path = clip["path"]
-                crops = list(metrics.get("reframe") or [])
-                if crops:
-                    reframed = os.path.join(task_dir, f"scene-{index}-take-{take}-reframed.mp4")
-                    output_path = cv_engine.apply_reframe(clip["path"], crops[0], reframed)
-                    if output_path != clip["path"]:
-                        metrics["reframe_applied"] = True
-                candidate = {"path": output_path, "score": float(report.get("score") or 0), "report": report}
-                if accepted_take is None or candidate["score"] >= accepted_take["score"]:
-                    accepted_take = candidate
+            accepted_take = _one_take(index, take, prompt, duration, allow_budget_skip=False)
+            if accepted_take is not None:
                 break
+            refinement = history[-1].get("refinement") if history and history[-1].get("scene") == index else ""
+            prompt = f"{base_prompt}. {refinement}".strip()
             logger.info(
                 "cv regenerate scene=%s next_take=%s estimated=%s remaining=%s",
                 index,
                 take + 1,
-                openrouter_video._format_money(estimate),
-                openrouter_video._format_money(budget - spent),
+                openrouter_video._format_money(_price(model, duration, resolution)),
+                openrouter_video._format_money(budget - _spent_from(jobs)),
             )
-            prompt = f"{scene.get('visual_prompt') or prompt}. {report.get('refinement') or ''}".strip()
-        policy = str(getattr(params, "cv_terminal_policy", "") or "fail")
         if accepted_take is None:
-            _finish(task_id, reports, spent, jobs, "failed")
-            raise AutonomousError(
-                f"Scene {index + 1} was rejected after {retries + 1} take(s). "
-                f"Policy {policy} does not assemble a rejected clip."
-            )
-        chosen.append(accepted_take["path"])
-        reports.append(accepted_take["report"])
-        _write(
-            task_id,
-            scene_status=_statuses(reports),
-            cv_report={"scenes": reports, "spent_usd": openrouter_video._format_money(spent), "disclaimer": cv_engine.DISCLAIMER},
+            deferred.append({
+                "index": index,
+                "prompt": prompt,
+                "base_prompt": base_prompt,
+                "duration": duration,
+                "next_take": retries + 1,
+            })
+            logger.info("cv defer scene=%s until the other scenes finish kept=%s", index, len(accepted))
+            continue
+        accepted[index] = accepted_take
+    for item in deferred:
+        index = int(item["index"])
+        duration = int(item["duration"])
+        take = int(item["next_take"])
+        logger.info("cv retry-at-end scene=%s take=%s", index, take)
+        accepted_take = _one_take(index, take, str(item["prompt"]), duration, allow_budget_skip=True)
+        if accepted_take is None:
+            take += 1
+            alternate = f"{item['base_prompt']}. Different camera angle, continuous action, no repeated shot."
+            logger.info("cv alternate scene=%s take=%s", index, take)
+            accepted_take = _one_take(index, take, alternate, duration, allow_budget_skip=True)
+        if accepted_take is not None:
+            accepted[index] = accepted_take
+    missing = [int(scene["index"]) + 1 for scene in scenes if int(scene["index"]) not in accepted]
+    if missing:
+        _finish(task_id, history, _spent_from(jobs), jobs, "failed")
+        raise AutonomousError(
+            f"Scene {', '.join(str(number) for number in missing)} was still rejected after another attempt at the end. "
+            f"{len(accepted)} accepted clip(s) were kept and a rejected clip was not assembled."
         )
+    chosen = [accepted[int(scene["index"])]["path"] for scene in scenes]
+    _write(
+        task_id,
+        scene_status=_statuses(history),
+        cv_report={"scenes": history, "spent_usd": openrouter_video._format_money(_spent_from(jobs)), "disclaimer": cv_engine.DISCLAIMER},
+    )
     params.video_concat_mode = VideoConcatMode.sequential
     duration = int(scenes[0].get("duration") or 5)
     if int(getattr(params, "video_clip_duration", 0) or 0) < duration:
         params.video_clip_duration = duration
-    _finish(task_id, reports, spent, jobs, "completed")
+    _finish(task_id, history, _spent_from(jobs), jobs, "completed")
     return chosen
 
 
@@ -358,7 +394,7 @@ def _statuses(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for report in reports:
         rows.append({
             "index": report.get("scene"),
-            "status": "accepted" if report.get("accepted") else "best-effort",
+            "status": "accepted" if report.get("accepted") else "rejected",
             "score": report.get("score"),
             "warnings": list(report.get("warnings") or [])[:4],
         })
