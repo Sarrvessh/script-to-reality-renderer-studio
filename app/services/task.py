@@ -40,9 +40,9 @@ from app.utils import file_security, utils
 from app.utils.subtitle_writer import staged_subtitle_file
 
 
-# 发布请求最长可等待数分钟，不能继续占用视频生成任务的并发名额。
-# 固定大小的线程池将发布吞吐限制在可控范围内，同时让视频产物生成后
-# 立即进入完成状态。
+# A publish request can wait several minutes and must not keep occupying a video-generation concurrency slot.
+# A fixed-size thread pool caps publish throughput, and lets the video output
+# enter the completed state as soon as it is produced.
 _cross_post_executor = ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix="mpt-cross-post",
@@ -74,9 +74,9 @@ _CROSS_POST_SOCIAL_PLATFORMS = {
     "instagram": "instagram_reels",
     "facebook": "facebook_reels",
 }
-# 视频配乐服务只需实现 ``is_enabled`` 和 ``generate_bgm``。供应商差异集中在
-# 文件扩展名、领域异常和 WebUI 警告代码；任务编排、0 音量短路及失败降级
-# 全部复用同一路径，避免后续新增供应商时维护多份相似流程。
+# A video-music service only needs to implement ``is_enabled`` and ``generate_bgm``. Provider differences sit in
+# the file extension, domain exceptions, and WebUI warning codes; task orchestration, the 0-volume short circuit, and failure fallback
+# all share one path so a new provider does not require another copy of the same flow.
 _VIDEO_MUSIC_PROVIDERS = {
     "sonilo": {
         "service": sonilo,
@@ -104,10 +104,10 @@ _SUPPORTED_VIDEO_SOURCES = frozenset({
 
 def _get_video_music_prompt(params: VideoParams) -> str:
     """
-    读取当前视频配乐供应商实际使用的提示词。
+    Read the prompt the current video-music provider actually uses.
 
-    新任务统一使用供应商无关字段；旧 Sonilo CLI 参数和历史任务仍可能只有
-    ``sonilo_bgm_prompt``，因此仅在 Sonilo 通用字段为空时读取旧字段。
+    New tasks use the provider-agnostic field; old Sonilo CLI arguments and historical tasks may still have only
+    ``sonilo_bgm_prompt``, so the legacy field is read only when the Sonilo generic field is empty.
     """
     prompt = str(params.video_music_prompt or "").strip()
     if params.bgm_type == "sonilo" and not prompt:
@@ -116,7 +116,7 @@ def _get_video_music_prompt(params: VideoParams) -> str:
 
 
 def is_task_busy(task: dict | None) -> bool:
-    """判断任务是否仍在生成或发布，供所有删除入口复用。"""
+    """Return whether the task is still generating or publishing, for every delete entry point."""
     if not task:
         return False
 
@@ -126,9 +126,9 @@ def is_task_busy(task: dict | None) -> bool:
     except (TypeError, ValueError):
         pass
 
-    # 视频生成和跨平台发布都可能继续读取任务目录。统一视为忙碌状态，
-    # 可以避免 API 与 WebUI 分别维护规则后出现一个允许删除、另一个禁止
-    # 删除的不一致行为。
+    # Video generation and cross-posting may both keep reading the task directory. Treating both as busy
+    # avoids the API and WebUI each keeping their own rule and ending up with one allowing delete and the other
+    # forbidding it.
     return (
         state == const.TASK_STATE_PROCESSING
         or task.get("cross_post_state") in _ACTIVE_CROSS_POST_STATES
@@ -136,13 +136,13 @@ def is_task_busy(task: dict | None) -> bool:
 
 
 def _register_cross_post_future(task_id: str, future: Future) -> None:
-    """登记当前进程持有的发布 Future，供启动恢复和测试判断真实运行状态。"""
+    """Register the publish Future held by this process, for startup recovery and tests of real running state."""
     with _cross_post_registry_lock:
         _cross_post_futures[task_id] = future
 
 
 def _unregister_cross_post_future(task_id: str, future: Future | None = None) -> None:
-    """仅移除匹配的 Future，避免旧回调误删同任务后续注册的新工作。"""
+    """Remove only the matching Future, so an old callback does not drop newer work registered for the same task."""
     with _cross_post_registry_lock:
         current = _cross_post_futures.get(task_id)
         if current is None or (future is not None and current is not future):
@@ -151,14 +151,14 @@ def _unregister_cross_post_future(task_id: str, future: Future | None = None) ->
 
 
 def _is_cross_post_active_in_process(task_id: str) -> bool:
-    """判断当前进程是否仍持有未结束的发布任务。"""
+    """Return whether this process still holds an unfinished publish task."""
     with _cross_post_registry_lock:
         future = _cross_post_futures.get(task_id)
         return future is not None and not future.done()
 
 
 def _is_windows_process_alive(process_id: int) -> bool:
-    """通过只读 Win32 API 判断进程状态，避免用 os.kill 误终止进程。"""
+    """Check process state through a read-only Win32 API so os.kill does not terminate the process by mistake."""
     import ctypes
 
     process_query_limited_information = 0x1000
@@ -166,8 +166,8 @@ def _is_windows_process_alive(process_id: int) -> bool:
     error_access_denied = 5
     error_invalid_parameter = 87
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    # ctypes 默认把未声明的返回值当作 32 位 int。Windows 64 位进程句柄可能
-    # 因此被截断，必须显式声明 Win32 函数签名后再调用。
+    # ctypes treats an undeclared return value as a 32-bit int. A 64-bit Windows process handle can
+    # be truncated because of that, so the Win32 function signatures must be declared before the call.
     kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
     kernel32.OpenProcess.restype = ctypes.c_void_p
     kernel32.GetExitCodeProcess.argtypes = [
@@ -187,8 +187,8 @@ def _is_windows_process_alive(process_id: int) -> bool:
         if error_code == error_invalid_parameter:
             return False
         if error_code == error_access_denied:
-            # 进程存在但当前用户无查询权限时，必须保守地视为存活，避免错误
-            # 回收其它账户正在执行的发布任务。
+            # If the process exists but the current user cannot query it, treat it as alive. Otherwise
+            # a publish task running under another account could be reclaimed by mistake.
             return True
         logger.warning(
             "failed to open cross-post owner process on Windows, "
@@ -211,7 +211,7 @@ def _is_windows_process_alive(process_id: int) -> bool:
 
 
 def _is_cross_post_owner_alive(owner: str | None) -> bool:
-    """判断持久化发布任务的本机进程是否仍存在。"""
+    """Return whether the local process for a persisted publish task still exists."""
     if not owner:
         return False
 
@@ -222,19 +222,19 @@ def _is_cross_post_owner_alive(owner: str | None) -> bool:
         logger.warning(f"invalid cross-post owner metadata: {owner}")
         return False
 
-    # 无法可靠探测其它主机上的进程。共享 Redis 的多主机部署中必须保守地
-    # 视为仍在运行，避免当前节点误删另一节点正在读取的视频文件。
+    # Processes on other hosts cannot be probed reliably. In a multi-host deployment sharing Redis, conservatively
+    # treat them as still running so this node does not delete video files another node is reading.
     if hostname != socket.gethostname():
         return True
 
-    # 当前进程内是否仍有真实发布工作，已经由 Future 注册表准确判断。运行到
-    # 这里说明注册表中没有对应 Future，即使 owner 与当前进程完全一致，也应
-    # 视为已中断；这可以覆盖终态写入持续失败、Future 已结束的场景。
+    # Whether this process still has real publish work is already known from the Future registry. Reaching
+    # here means there is no matching Future. Even if the owner matches this process exactly, treat it
+    # as interrupted; that covers a final-state write that keeps failing after the Future has finished.
     if process_id == os.getpid():
         return False
 
-    # Windows 的 os.kill(pid, 0) 与 POSIX 语义不同，可能直接终止目标进程。
-    # 使用只申请查询权限的 Win32 API，不向目标进程发送任何信号。
+    # On Windows, os.kill(pid, 0) does not match POSIX and may terminate the target process.
+    # Use a Win32 API that only requests query access and sends no signal to the target.
     if os.name == "nt":
         return _is_windows_process_alive(process_id)
 
@@ -258,15 +258,15 @@ def _mark_task_failed(
     error: str,
     details: dict | None = None,
 ) -> dict:
-    """记录结构化失败信息，并保留任务失败前已经到达的进度。"""
+    """Record structured failure details and keep the progress the task had already reached."""
     existing_task = None
     try:
         existing_task = sm.state.get_task(task_id)
     except Exception as exc:
         logger.warning(f"failed to read task state before failure update: {exc}")
 
-    # 具体服务函数通常比编排层拥有更准确的错误原因。后续的空结果检查
-    # 不能再用通用文案覆盖它，否则 API 调用方仍然只能看到模糊信息。
+    # The concrete service function usually has a more accurate error than the orchestrator. A later empty-result check
+    # must not overwrite it with generic copy, or API callers still see only a vague message.
     if (
         existing_task
         and existing_task.get("state") == const.TASK_STATE_FAILED
@@ -284,8 +284,8 @@ def _mark_task_failed(
         "failed_stage": stage,
         "error": message,
     }
-    # 某些外部任务已经创建了可用于恢复或排障的远端 ID。失败状态需要保留
-    # 这些非敏感字段，但不能允许调用方覆盖统一的状态、进度和错误结构。
+    # Some external tasks have already created a remote ID that can be used to recover or debug. The failed state must keep
+    # those non-sensitive fields, but callers must not be allowed to overwrite the shared status, progress, and error shape.
     # Keep completed batch outputs in both the persisted state and the direct
     # return value used by the CLI. These fields are reset before a new attempt.
     failure_details = {
@@ -322,12 +322,12 @@ def _mark_task_failed(
 
 def _stage_progress_reporter(task_id: str, stage_start: float, stage_end: float):
     """
-    返回一个回调，把阶段内 0~1 的完成比例换算成任务进度并写入状态。
+    Return a callback that turns a stage's 0~1 completion ratio into task progress and writes it.
 
-    流水线原先只在阶段边界更新进度，下载素材和处理片段这类耗时阶段期间
-    进度条完全不动，用户无法区分仍在运行与已经卡死。进度只是展示信息：
-    比例无法解析时忽略，状态后端写入失败时只记录日志，不能因此中断下载或
-    合成。
+    The pipeline used to update progress only at stage boundaries, so during long stages such as downloading footage
+    and processing clips the bar did not move and users could not tell running from stuck. Progress is display-only:
+    an unparseable ratio is ignored, and a failed status-backend write is only logged. It must not stop download or
+    compositing.
     """
 
     def report(fraction) -> None:
@@ -375,9 +375,9 @@ def generate_terms(task_id, params, video_script):
     logger.info("\n\n## generating video terms")
     video_terms = params.video_terms
     if not video_terms:
-        # 开启素材按文案顺序匹配后，关键词本身也必须按脚本叙事顺序生成；
-        # 否则后续即使顺序下载和顺序拼接，也只能复用一组全局主题词，
-        # 无法改善“后面内容的画面提前出现”的问题。
+        # Once footage is matched to the copy in order, the keywords themselves must be generated in script order;
+        # otherwise later ordered download and ordered concatenation can only reuse one global topic list
+        # and cannot fix "pictures for later lines showing up too early".
         video_terms = llm.generate_terms(
             video_subject=params.video_subject,
             video_script=utils.remove_pause_tags(video_script),
@@ -405,8 +405,8 @@ def generate_terms(task_id, params, video_script):
         )
         return None
 
-    # 可选的 TwelveLabs Marengo 语义重排：未启用时返回原顺序，无任何副作用。
-    # 顺序匹配模式下关键词顺序本身就是脚本叙事顺序，必须保持原样，故跳过。
+    # Optional TwelveLabs Marengo semantic rerank: when disabled, the original order is returned with no side effects.
+    # In ordered-match mode the keyword order is already the script's narrative order, so it must stay as-is and is skipped.
     if not params.match_materials_to_script:
         video_terms = twelvelabs.rerank_terms_by_subject(
             video_subject=params.video_subject,
@@ -490,11 +490,11 @@ def _resolve_reusable_voice_preview(
     voice_preview: dict | None,
 ) -> tuple[str, float, object] | None:
     """
-    校验并解析 WebUI 提交的完整试听缓存。
+    Validate and resolve the full preview cache submitted by the WebUI.
 
-    该载荷不是公开 API 参数，只能来自当前进程的 WebUI。即便如此，后台任务
-    仍重新核对文案和全部配音参数，并限制音频位于当前任务目录；任何不一致都
-    回退普通 TTS，不让过期试听污染正式成片。
+    This payload is not a public API parameter; it can come only from the WebUI in this process. Even so, the background task
+    rechecks the copy and every voice parameter and requires the audio to stay in the current task directory; any mismatch
+    falls back to ordinary TTS so a stale preview cannot pollute the final video.
     """
     if not voice_preview:
         return None
@@ -565,8 +565,8 @@ def generate_audio(
         - sub_maker: subtitle maker object if TTS is used, None otherwise
     """
     logger.info("\n\n## generating audio")
-    # /audio 和 /subtitle 请求模型不包含 custom_audio_file，
-    # 这里统一做兼容读取，避免直调接口时抛属性错误。
+    # The /audio and /subtitle request models do not include custom_audio_file.
+    # Read it compatibly here so a direct call does not raise an attribute error.
     requested_custom_audio_file = getattr(params, "custom_audio_file", None)
     try:
         custom_audio_file = resolve_custom_audio_file(
@@ -662,9 +662,9 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
         return ""
 
     if sub_maker is None and subtitle_provider != "whisper":
-        # 自定义音频不会经过 TTS，因此没有 Edge/Azure 等 TTS 返回的
-        # sub_maker 时间轴。只有 Whisper 可以直接从音频文件转写字幕；
-        # 其他字幕提供方继续保持原有行为，避免生成错误的空时间轴。
+        # Custom audio does not go through TTS, so there is no sub_maker timeline
+        # from Edge/Azure or other TTS. Only Whisper can transcribe subtitles straight from the audio file;
+        # other subtitle providers keep their existing behavior so a wrong empty timeline is not produced.
         logger.warning(
             "subtitle maker is missing, skip subtitle generation for provider: "
             f"{subtitle_provider}"
@@ -683,10 +683,10 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
                 word_level=is_word_level,
             )
             if not os.path.exists(subtitle_path):
-                # Edge 字幕偶尔会因为时间轴与文案无法匹配而没有产出文件。这里不能
-                # 自动切换到 Whisper，否则首次失败会在用户不知情的情况下下载数 GB
-                # 的模型。只有显式配置 Whisper 时才允许加载模型，Edge 失败则保留
-                # 无字幕视频并记录原因，避免意外的网络和磁盘开销。
+                # Edge subtitles sometimes produce no file because the timeline cannot be matched to the copy. This must not
+                # automatically switch to Whisper, or the first failure would download several GB of
+                # model without the user knowing. Load the model only when Whisper is configured explicitly. On Edge failure, keep
+                # the video without subtitles and record why, so there is no surprise network or disk cost.
                 logger.warning(
                     "edge subtitle generation did not produce a subtitle file; "
                     "skip subtitles without falling back to whisper"
@@ -763,17 +763,17 @@ def get_video_materials(
                 confirm=True,
             )
             run_id = execution.run_id
-            # execute 返回即表示付费任务已经由远端接受。必须先把 run ID 写入
-            # 进程日志，即使 Redis 等状态后端随后不可用，运维人员仍能凭日志
-            # 在胜算云侧定位任务，不能让唯一标识只存在于局部变量中。
+            # A return from execute means the paid task was accepted remotely. Write the run ID to the
+            # process log first. Even if Redis or another status backend is then unavailable, operators can still use the log
+            # to find the task on Shengsuanyun. The only identifier must not live only in a local variable.
             logger.info(
                 "LoomLoom paid video run created: "
                 f"task_id={task_id}, run_id={run_id}, "
                 f"listing_version_id={request.listing_version_id}"
             )
-            # 付费任务一旦创建就立即记录远端 ID。即使后续轮询超时，日志和任务
-            # 状态仍能帮助用户或平台支持人员定位并找回已经生成的产物。状态后端
-            # 故障只能降低可观测性，不能中断已经开始计费的远端任务和产物下载。
+            # Record the remote ID as soon as a paid task is created. Even if later polling times out, the log and task
+            # state can still help the user or platform support find and recover output that was already generated. A status-backend
+            # failure can only reduce observability; it must not stop a remote task that is already billing, or the download of its output.
             _record_loomloom_run_reference(
                 task_id=task_id,
                 run_id=run_id,
@@ -812,8 +812,8 @@ def get_video_materials(
             return None
     else:
         logger.info(f"\n\n## downloading videos from {params.video_source}")
-        # 顺序匹配模式只在用户显式开启时生效。这里强制素材下载按关键词顺序
-        # 轮询，避免某个早期关键词下载太多素材，把后续脚本主题挤出最终时间线。
+        # Ordered matching applies only when the user turns it on explicitly. Force footage downloads to rotate through keywords
+        # in order so one early keyword does not download too much footage and push later script topics off the final timeline.
         try:
             downloaded_videos = material.download_videos(
                 task_id=task_id,
@@ -828,14 +828,14 @@ def get_video_materials(
                 audio_duration=audio_duration * params.video_count,
                 max_clip_duration=params.video_clip_duration,
                 match_script_order=params.match_materials_to_script,
-                # 素材阶段占用 40%~50%：每下完一个文件推进一次，慢速网络下
-                # 进度条不再长时间停在 40%。
+                # The footage stage occupies 40%~50%: advance once per finished file so on a slow network
+                # the progress bar does not sit at 40% for a long time.
                 progress_callback=_stage_progress_reporter(task_id, 40, 50),
             )
         except volcengine_seedance.VolcEngineSeedanceError as exc:
-            # 未确认状态和已生成但下载失败都对应一个可在方舟控制台恢复的远端
-            # 任务。统一从异常携带的 task_id 写入失败状态，避免不同异常分支
-            # 各自维护恢复信息并在后续扩展时再次遗漏。
+            # Both an unconfirmed state and a generated-but-download-failed state map to a remote
+            # task that can be recovered in the Ark console. Write the failure from the exception's task_id in one place so branches
+            # do not each keep their own recovery info and drop it again when the code grows.
             remote_task_id = str(getattr(exc, "task_id", "") or "").strip()
             details = (
                 {"volcengine_seedance_task_id": remote_task_id}
@@ -866,8 +866,8 @@ def get_video_materials(
             _mark_task_failed(task_id, "materials", str(exc))
             return None
         except ofox.OFoxError as exc:
-            # 与方舟同一恢复语义：未确认状态和已生成但下载失败都对应一个可在
-            # OFox 控制台恢复的远端任务，统一从异常携带的 task_id 写入失败状态。
+            # Same recovery meaning as Ark: both an unconfirmed state and a generated-but-download-failed state map to a remote
+            # task that can be recovered in the OFox console. Write the failure from the exception's task_id in one place.
             remote_task_id = str(getattr(exc, "task_id", "") or "").strip()
             details = (
                 {"ofox_task_id": remote_task_id} if remote_task_id else None
@@ -880,9 +880,9 @@ def get_video_materials(
             )
             return None
         except metaso_minimax.MetasoMiniMaxError as exc:
-            # 秘塔任务与方舟任务使用不同的恢复入口和字段名，不能合并成一个
-            # 模糊的 remote_task_id。保留明确 Provider 前缀便于 API、WebUI
-            # 和运维日志直接定位对应平台。
+            # Metaso tasks and Ark tasks use different recovery entry points and field names, so they cannot be merged into one
+            # vague remote_task_id. Keep a clear Provider prefix so the API, WebUI,
+            # and ops logs can point straight at the matching platform.
             remote_task_id = str(getattr(exc, "task_id", "") or "").strip()
             details = (
                 {"metaso_minimax_task_id": remote_task_id} if remote_task_id else None
@@ -921,11 +921,11 @@ def _record_loomloom_run_reference(
     *, task_id: str, run_id: str, listing_version_id: str
 ) -> bool | None:
     """
-    尽最大努力保存已创建的付费 LoomLoom Run，不让状态故障中断远端任务。
+    Do everything possible to save an already created paid LoomLoom Run so a status failure does not stop the remote task.
 
-    返回 True 表示保存成功，False 表示任务记录已经不存在，None 表示状态后端
-    在有限重试后仍不可用。调用方无论得到哪种结果都应继续轮询和下载，因为
-    execute 已经产生外部付费副作用，停止本地流程只会让产物更难找回。
+    True means the save succeeded, False means the task record is already gone, and None means the status backend
+    is still unavailable after limited retries. Whatever the result, the caller should keep polling and downloading, because
+    execute already caused an external paid side effect and stopping the local flow only makes the output harder to recover.
     """
     fields = {
         "loomloom_run_id": run_id,
@@ -1041,8 +1041,8 @@ def generate_final_videos(
             }
             if allocate_batch_materials else {}
         )
-        # 每条视频占 50% 进度中的一份，合成与最终编码各占一半。片段处理是
-        # 合成里最耗时的部分，逐段推进这一半的进度。
+        # Each video takes one share of the 50% progress, and compositing and final encoding each take half of that. Clip handling is
+        # the slowest part of compositing, so advance that half clip by clip.
         combine_share = 50 / params.video_count / 2
         video.combine_videos(
             combined_video_path=combined_video_path,
@@ -1088,8 +1088,8 @@ def generate_final_videos(
 
         final_video_path = path.join(utils.task_dir(task_id), f"final-{index}.mp4")
 
-        # 视频配乐模式先明确禁用默认 BGM 解析，避免旧任务残留的 bgm_file 被
-        # 误用。只有音量大于 0 才生成代理并调用付费 API；0 音量统一跳过。
+        # Video-music mode first disables default BGM resolution explicitly so a leftover bgm_file from an old task is not
+        # reused by mistake. Build a proxy and call the paid API only when volume is greater than 0; volume 0 always skips.
         bgm_file_override = "" if video_music_provider else None
         if video_music_requested:
             service = video_music_provider["service"]
@@ -1108,8 +1108,8 @@ def generate_final_videos(
                 )
                 bgm_file_override = generated_bgm_path
             except video_music_provider["error_type"] as exc:
-                # 视频、旁白和字幕都已生成时，第三方配乐临时失败不应浪费整条
-                # 任务。当前视频明确禁用 BGM，并把降级结果返回 WebUI 提醒用户。
+                # If the video, narration, and subtitles are already done, a temporary third-party music failure should not waste the whole
+                # task. This video explicitly disables BGM and returns the degraded result to the WebUI so the user is told.
                 logger.warning(
                     f"{display_name} BGM generation failed: task_id={task_id}, "
                     f"video_index={index}, error={exc}"
@@ -1131,9 +1131,9 @@ def generate_final_videos(
             and bgm_file_override
             and not bgm_mix_succeeded
         ):
-            # 第三方已成功返回并通过 FFmpeg 校验，但 MoviePy 最终混音仍可能
-            # 因运行环境失败。视频服务会保留无 BGM 成片；API 生成失败时
-            # override 为空，因此不会重复追加警告。
+            # The third party already returned audio that passed FFmpeg checks, but MoviePy's final mix can still
+            # fail because of the runtime. The video service keeps a cut without BGM; when API generation fails,
+            # override is empty, so the warning is not appended twice.
             warnings.append(
                 {
                     "code": video_music_provider["warning_code"],
@@ -1153,14 +1153,14 @@ def generate_final_videos(
 
 
 def _patch_cross_post_state(task_id: str, **kwargs) -> bool | None:
-    """安全更新发布字段；短暂状态后端故障时有限重试。"""
+    """Safely update publish fields, with limited retries on a brief status-backend failure."""
     for attempt in range(1, _CROSS_POST_STATE_WRITE_ATTEMPTS + 1):
         try:
             return sm.state.patch_task(task_id, **kwargs)
         except Exception as exc:
-            # Redis 短暂断连不应让任务永久停留在 pending/processing。发布状态
-            # 写入频率很低，这里使用固定次数和短等待即可覆盖瞬时故障，同时
-            # 避免后台线程无限阻塞。最后一次失败保留完整堆栈便于定位。
+            # A brief Redis disconnect must not leave the task stuck in pending/processing forever. Publish-state
+            # writes are rare, so a fixed number of short waits covers a transient fault and
+            # avoids blocking a background thread forever. The last failure keeps the full stack for diagnosis.
             if attempt >= _CROSS_POST_STATE_WRITE_ATTEMPTS:
                 logger.exception(
                     f"failed to update cross-post state after retries, "
@@ -1183,7 +1183,7 @@ def _record_cross_post_failure(
     error: Exception,
     results: list[dict] | None = None,
 ) -> None:
-    """尽最大努力保存发布失败；状态后端不可用时由日志保留诊断信息。"""
+    """Do everything possible to save a publish failure; if the status backend is down, the log keeps the diagnostics."""
     updated = _patch_cross_post_state(
         task_id,
         cross_post_state=const.CROSS_POST_STATE_FAILED,
@@ -1196,12 +1196,12 @@ def _record_cross_post_failure(
 
 
 def _ensure_cross_post_terminal_state(task_id: str) -> None:
-    """Future 结束后把仍处于活动态的任务收敛为失败。"""
+    """After a Future finishes, converge any task still in an active state to failed."""
     try:
         task = sm.state.get_task(task_id)
     except Exception as exc:
-        # 此处已经是 Future 的最终回调，没有后续同步调用方可以处理异常。
-        # 状态后端恢复后，下一次进程启动仍会通过恢复逻辑处理遗留状态。
+        # This is already the Future's final callback; no later synchronous caller can handle the exception.
+        # After the status backend recovers, the next process start still handles leftover state through recovery.
         logger.exception(
             f"failed to verify final cross-post state, task_id: {task_id}, error: {exc}"
         )
@@ -1223,20 +1223,20 @@ def _ensure_cross_post_terminal_state(task_id: str) -> None:
 
 def recover_interrupted_cross_posts(page_size: int = 100) -> int | None:
     """
-    将进程重启后无法恢复的发布任务标记为失败。
+    Mark publish tasks that cannot be resumed after a process restart as failed.
 
-    跨平台发布使用当前进程内的线程池，不是持久化任务队列。进程启动时，
-    Redis 中残留的 pending/processing 不会自动继续执行；如果继续把它们视为
-    运行中，用户将永久无法删除任务。这里仅收集一次任务 ID，再读取当前状态；
-    不能跨多次 Redis SCAN 按页码推进，否则扫描顺序变化会漏掉遗留任务。
-    只处理当前进程没有对应 Future 的活动记录，并保留已经生成的视频结果。
+    Cross-posting uses an in-process thread pool, not a persistent task queue. On startup,
+    leftover pending/processing rows in Redis do not resume on their own; if they stay marked as
+    running, the user can never delete the task. Collect task IDs once, then read the current state;
+    do not advance by page across repeated Redis SCANs, or a changed scan order will skip leftover tasks.
+    Only active records with no Future in this process are handled, and already generated video results are kept.
     """
     recovered = 0
     try:
         task_ids = sm.state.list_task_ids(scan_count=page_size)
         for task_id in task_ids:
-            # 扫描之后任务可能已被删除或转为终态；以最新状态决定是否恢复，
-            # 不能使用扫描时的旧快照覆盖已经完成的发布结果。
+            # After the scan the task may have been deleted or moved to a terminal state; decide recovery from the latest state.
+            # Do not overwrite an already finished publish result with the old snapshot from scan time.
             task = sm.state.get_task(task_id)
             if (
                 not task
@@ -1274,7 +1274,7 @@ def _run_cross_post(
     youtube_made_for_kids: bool = False,
     upload_account: dict | None = None,
 ) -> None:
-    """后台执行跨平台发布，并只补充发布相关的任务字段。"""
+    """Run cross-posting in the background and fill in only the publish-related task fields."""
     results = []
     try:
         state_updated = _patch_cross_post_state(
@@ -1284,8 +1284,8 @@ def _run_cross_post(
             cross_post_owner=_cross_post_process_owner,
         )
         if state_updated is not True:
-            # False 表示任务已删除，None 表示状态后端暂时不可用。两种情况都
-            # 不应继续调用第三方接口，否则用户无法查询或控制这次发布。
+            # False means the task was deleted, and None means the status backend is temporarily unavailable. In both cases
+            # do not keep calling the third-party API, or the user cannot query or control this publish.
             if state_updated is False:
                 logger.warning(f"skip cross-post for missing task: {task_id}")
             else:
@@ -1406,27 +1406,27 @@ def _run_cross_post(
         if state_updated is False:
             logger.warning(f"discard cross-post result for missing task: {task_id}")
         elif state_updated is None:
-            # 上传已经结束但结果没有持久化时，不能继续保留 processing。
-            # 失败状态写入会再次经过有限重试，至少让调用方得到明确终态。
+            # If the upload has finished but the result was not persisted, do not leave the task in processing.
+            # Writing the failed state goes through limited retries again so the caller at least gets a clear terminal state.
             _record_cross_post_failure(
                 task_id,
                 RuntimeError("failed to persist final cross-post result"),
                 results,
             )
     except Exception as exc:
-        # 发布失败只影响发布状态，不能反向覆盖已经完成的视频任务。
-        # 异常原文写入任务状态，API 调用方无需访问服务端日志也能定位问题。
+        # A publish failure affects only publish state and must not overwrite a video task that already completed.
+        # The original exception is stored on the task so API callers can diagnose it without server logs.
         logger.exception(f"cross-post failed, task_id: {task_id}, error: {exc}")
         _record_cross_post_failure(task_id, exc, results)
 
 
 def _run_cross_post_with_slot(*args) -> None:
-    """执行发布任务，并确保成功、失败或异常时都会归还队列容量。"""
+    """Run the publish task and always return queue capacity on success, failure, or exception."""
     try:
         _run_cross_post(*args)
     except Exception as exc:
-        # _run_cross_post 已处理预期异常；这里是最后一道保护，避免未来新增
-        # 逻辑抛出的异常只保存在无人读取的 Future 中。
+        # _run_cross_post already handles expected exceptions; this is the last guard so an exception from future
+        # logic is not left only inside a Future that nobody reads.
         task_id = str(args[0]) if args else "unknown"
         logger.exception(f"cross-post worker crashed, task_id: {task_id}, error: {exc}")
         if args:
@@ -1436,15 +1436,15 @@ def _run_cross_post_with_slot(*args) -> None:
 
 
 def _finalize_cross_post_future(task_id: str, future: Future) -> None:
-    """清理 Future 注册，并确保取消、异常和状态写入失败都能收敛。"""
+    """Clear the Future registration and converge cancellation, exceptions, and failed status writes."""
     _unregister_cross_post_future(task_id, future)
 
     try:
         error = future.exception()
     except CancelledError:
         logger.warning(f"cross-post future was cancelled, task_id: {task_id}")
-        # Future 在开始执行前被取消时，worker 的 finally 不会运行，因此需要
-        # 在回调中归还队列容量，并把持久化状态改为失败。
+        # If the Future is cancelled before it starts, the worker's finally does not run, so the callback must
+        # return queue capacity and set the persisted state to failed.
         _cross_post_slots.release()
         _record_cross_post_failure(
             task_id,
@@ -1476,7 +1476,7 @@ def _schedule_cross_post(
     youtube_privacy_status: str,
     youtube_made_for_kids: bool = False,
 ) -> str | None:
-    """提交后台发布任务；成功返回 None，调度失败返回可查询的错误原因。"""
+    """Submit a background publish task; return None on success, or a queryable error reason if scheduling fails."""
     if not _cross_post_slots.acquire(blocking=False):
         error = "cross-post queue is full; publishing was skipped"
         logger.warning(
@@ -1622,8 +1622,8 @@ def _run_pipeline(
             "optional for local gateways that need no auth)",
         )
 
-    # 只有完整成片流程需要视频配乐供应商。尽早阻止缺少 Key 的完整任务，避免
-    # 先消耗 LLM、TTS 和素材服务额度；中间产物接口仍可独立使用。
+    # Only the full finished-video flow needs a video-music provider. Stop a full task that lacks a key early so it does not
+    # spend LLM, TTS, and footage quota first; intermediate-artifact endpoints can still be used on their own.
     video_music_provider = _VIDEO_MUSIC_PROVIDERS.get(params.bgm_type)
     video_music_enabled = (
         stop_at == "video"
@@ -1640,9 +1640,9 @@ def _run_pipeline(
                 f"{display_name} background music requires an API key",
             )
 
-        # WebUI 会限制输入长度，但 API、CLI 和历史任务可以绕过前端控件。
-        # 在生成脚本、配音和素材之前按供应商上限再次校验，避免完整视频合成后
-        # 才由第三方请求拒绝。服务层仍保留同一校验，作为直接调用时的最后防线。
+        # The WebUI limits input length, but the API, CLI, and historical tasks can bypass the form controls.
+        # Check the provider limit again before generating the script, voice, and footage so the third party does not reject the request
+        # only after the full video is composited. The service layer keeps the same check as a last line of defense for direct calls.
         music_prompt = _get_video_music_prompt(params)
         max_prompt_length = int(getattr(service, "MAX_PROMPT_LENGTH", 0) or 0)
         if max_prompt_length and len(music_prompt) > max_prompt_length:
@@ -1652,8 +1652,8 @@ def _run_pipeline(
                 (f"{display_name} music prompt exceeds {max_prompt_length} characters"),
             )
 
-        # 供应商可以选择提供不计费的账号前置检查。检查函数只应抛出确定性
-        # 错误；网络波动或权限范围无法确认时由服务层记录警告并继续实际生成。
+        # A provider may offer an account preflight that does not bill. The check function should raise only deterministic
+        # errors; if the network is flaky or the permission scope cannot be confirmed, the service logs a warning and continues generation.
         validate_access = getattr(service, "validate_generation_access", None)
         if callable(validate_access):
             try:
@@ -1661,10 +1661,10 @@ def _run_pipeline(
             except video_music_provider["error_type"] as exc:
                 return _mark_task_failed(task_id, "preflight", str(exc))
 
-    # 只有 script/terms 中间产物不需要 FFmpeg（它们不生成音频或视频）。API、
-    # CLI 和 WebUI 都通过这个共享入口执行任务，因此在此统一探测，而不是
-    # 分别在各个入口重复检查，能保证三条路径的行为一致。放在配乐 Key 校验
-    # 之后，是为了不改变那些校验原有的"最先失败"顺序和错误信息。
+    # Only script/terms intermediate artifacts do not need FFmpeg (they produce no audio or video). The API,
+    # CLI, and WebUI all run tasks through this shared entry, so probe once here instead of
+    # repeating the check at each entry, which keeps the three paths consistent. It sits after the music-key check
+    # so those checks keep their original "fail first" order and error text.
     if stop_at not in ("script", "terms") and not utils.check_ffmpeg_ready():
         return _mark_task_failed(
             task_id,
@@ -1823,8 +1823,8 @@ def _run_pipeline(
 
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=50)
 
-    # 仅完整视频生成流程才需要处理视频拼接模式；
-    # 这样可以避免 /subtitle 和 /audio 这类请求访问不存在的字段。
+    # Only the full video-generation flow needs to handle the video-concatenation mode;
+    # that avoids /subtitle and /audio requests touching fields they do not have.
     if type(params.video_concat_mode) is str:
         params.video_concat_mode = VideoConcatMode(params.video_concat_mode)
 
@@ -1875,8 +1875,8 @@ def _run_pipeline(
         f"task {task_id} finished, generated {len(final_video_paths)} videos."
     )
 
-    # 7. 先完成视频生成任务，再按需提交跨平台发布。第三方上传可能耗时
-    # 数分钟，不应阻塞视频结果返回，也不能反向影响已经生成的成片。
+    # 7. Finish the video-generation task first, then submit cross-posting if needed. A third-party upload can take
+    # several minutes and must not block returning the video result or affect a finished cut.
     cross_post_enabled = (
         upload_post.upload_post_service.is_configured()
         and upload_post.upload_post_service.auto_upload
@@ -1920,13 +1920,13 @@ def _run_pipeline(
             youtube_privacy_status=(
                 upload_post.upload_post_service.youtube_privacy_status
             ),
-            # 固定排队时的受众选择，之后修改 WebUI 不应改变已排队视频的声明。
+            # Freeze the audience choice at queue time. Later WebUI edits must not change the declaration of a video already queued.
             youtube_made_for_kids=(
                 upload_post.upload_post_service.youtube_made_for_kids
             ),
         )
-        # 队列满或线程池关闭属于同步可知的调度失败。任务状态已经由调度函数
-        # 更新，这里同步修正返回快照，避免调用方收到与后续查询不一致的 pending。
+        # A full queue or a shut-down thread pool is a scheduling failure known synchronously. The scheduler has already
+        # updated task state, so fix the returned snapshot here and do not hand the caller a pending that later queries disagree with.
         if scheduling_error:
             kwargs["cross_post_state"] = const.CROSS_POST_STATE_FAILED
             kwargs["cross_post_error"] = scheduling_error
@@ -1947,10 +1947,10 @@ def start(
     voxcpm_prompt_text: str = "",
 ):
     """
-    执行任务流水线，并确保未预期异常也会转换成可查询的失败状态。
+    Run the task pipeline and turn unexpected exceptions into a queryable failed state.
 
-    ``allow_server_file_input`` 只供本机 CLI 使用。HTTP API 和 WebUI 必须保持
-    默认值，让自定义音频始终受当前任务目录约束。
+    ``allow_server_file_input`` is only for the local CLI. The HTTP API and WebUI must keep
+    the default so custom audio stays constrained to the current task directory.
     """
     try:
         return _run_pipeline(

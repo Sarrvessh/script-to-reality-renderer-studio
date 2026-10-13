@@ -11,7 +11,10 @@ function Shell() {
   return (
     <div className="shell">
       <aside className="cart">
-        <p className="brand">Script-to-Reality<br /><span>Renderer Studio</span></p>
+        <p className="brand">
+          <img src="/favicon.svg" alt="" width="28" height="28" />
+          <span>Script-to-Reality<br /><span>Renderer Studio</span></span>
+        </p>
         <nav aria-label="Main">
           <NavLink to="/" className={({ isActive }) => `slot${isActive ? " slot-live" : ""}`} end>{t("Generate Video", "Generate")}</NavLink>
           <NavLink to="/library" className={({ isActive }) => `slot${isActive ? " slot-live" : ""}`}>{t("Task Management", "Library")}</NavLink>

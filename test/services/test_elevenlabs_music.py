@@ -12,7 +12,7 @@ from app.services import elevenlabs_music
 
 
 class _StreamingResponse:
-    """提供 ElevenLabs 配乐服务实际使用的最小 Response 接口。"""
+    """Provide the minimal Response interface the ElevenLabs music service actually uses."""
 
     def __init__(
         self,
@@ -77,7 +77,7 @@ class TestElevenLabsMusicService(unittest.TestCase):
         )
 
     def test_request_bgm_reports_unknown_charset_body_as_music_error(self):
-        """上游错误正文声明未知 charset 时，取证降级不能变成 LookupError。"""
+        """When an upstream error body declares an unknown charset, evidence fallback must not become a LookupError."""
         received = []
 
         class Receiver(BaseHTTPRequestHandler):
@@ -90,14 +90,14 @@ class TestElevenLabsMusicService(unittest.TestCase):
                 self.wfile.write(body)
 
             def log_message(self, *_args):
-                # 本机接收器不打印请求头，测试输出无需包含认证信息。
+                # The local receiver does not print request headers, so test output need not include credentials.
                 pass
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Receiver)
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            # 只访问环回地址，绕过开发机代理，避免把测试请求交给外部代理服务。
+            # Access only the loopback address, bypassing the dev-machine proxy so the test request is not handed to an external proxy.
             with requests.Session() as session:
                 session.trust_env = False
 
@@ -164,7 +164,7 @@ class TestElevenLabsMusicService(unittest.TestCase):
             self.assertEqual(elevenlabs_music.get_api_key(), "env-key")
 
     def test_model_and_timeout_reject_invalid_configuration(self):
-        """第三方请求配置异常时必须回退安全默认值，不能让任务直接崩溃。"""
+        """When third-party request config is invalid, fall back to safe defaults; do not let the task crash outright."""
         test_cases = [
             ({"music_model_id": "music_v1"}, "music_v1", (15, 600)),
             (
@@ -305,8 +305,8 @@ class TestElevenLabsMusicService(unittest.TestCase):
 
     def test_generation_access_only_blocks_deterministic_account_errors(self):
         """
-        免费套餐和无效 Key 必须阻止昂贵任务；订阅接口范围或网络问题无法证明
-        Music API 不可用，只能记录警告并交给实际生成请求确认。
+        A free plan and an invalid key must block an expensive task; subscription-endpoint scope or network trouble cannot prove
+        the Music API is unavailable, so only log a warning and let the actual generation request confirm.
         """
         deterministic_errors = [
             elevenlabs_music.ElevenLabsPaidPlanRequiredError("paid plan"),
@@ -339,7 +339,7 @@ class TestElevenLabsMusicService(unittest.TestCase):
         self.assertIn("inconclusive", str(warning.call_args))
 
     def test_connection_rejects_free_plan_before_music_generation(self):
-        """免费套餐不支持 Music API，应在上传视频前给出明确错误。"""
+        """A free plan does not support the Music API and should give a clear error before the video is uploaded."""
         response = _StreamingResponse(payload={"tier": "free"})
         with (
             patch.object(
@@ -513,8 +513,8 @@ class TestElevenLabsMusicService(unittest.TestCase):
                 post.call_args.kwargs["params"]["output_format"],
                 "mp3_44100_128",
             )
-            # 生产接口实际接收 ``videos``；使用文档示例中的 ``videos[]`` 会
-            # 返回 422 Field required，因此测试固定真实可用的协议字段。
+            # The production API actually receives ``videos``; using ``videos[]`` from the docs example
+            # returns 422 Field required, so the test sticks to the protocol field that really works.
             self.assertEqual(post.call_args.kwargs["files"][0][0], "videos")
             self.assertEqual(post.call_args.kwargs["stream"], True)
             self.assertEqual(

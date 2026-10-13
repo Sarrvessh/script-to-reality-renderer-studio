@@ -14,9 +14,9 @@ from app.services.loomloom import LoomLoomConfirmedVideoRequest
 from app.utils.logging_utils import format_log_record, log_scope_thread_id
 
 
-# WebUI 的配置保存在进程级全局字典中。原来的同步实现会在完整生成期间持有
-# runtime_config_lock，因此不同浏览器会话实际上也是串行执行。这里把并发数固定
-# 为 1，既延续原有配置一致性，也避免多个线程只是在配置锁外无意义地等待。
+# WebUI settings live in a process-wide global dict. The old synchronous path held
+# runtime_config_lock for the whole generation, so different browser sessions were already serialized. Concurrency is fixed
+# at 1, which keeps that config consistency and avoids extra threads waiting pointlessly outside the config lock.
 _task_manager = InMemoryTaskManager(
     max_concurrent_tasks=1,
     max_queued_tasks=max(1, int(config.app.get("max_queued_tasks", 100))),
@@ -25,18 +25,18 @@ _task_logs: dict[str, deque[str]] = {}
 _task_logs_lock = threading.RLock()
 _MAX_LOG_TASKS = 20
 _MAX_LOG_RECORDS_PER_TASK = 1000
-# Streamlit 无法由后台线程直接推送组件更新，只能通过 Fragment 轮询。0.5 秒
-# 足以让 WebUI 日志接近终端实时输出，又不会像高频刷新那样持续占用浏览器资源。
+# Streamlit cannot push widget updates from a background thread, so a Fragment polls. 0.5 seconds
+# is enough for WebUI logs to stay close to the terminal without the browser cost of a high-frequency refresh.
 TASK_LOG_REFRESH_INTERVAL_SECONDS = 0.5
 
 
 def _append_task_log(task_id: str, message: str) -> None:
-    """按任务保存有限数量的日志，供 Streamlit Fragment 安全轮询。"""
+    """Keep a bounded log per task so a Streamlit Fragment can poll it safely."""
     with _task_logs_lock:
         records = _task_logs.get(task_id)
         if records is None:
-            # 只保留最近任务的日志，避免 WebUI 服务长时间运行后持续占用内存。
-            # dict 保持插入顺序；任务日志仅用于界面诊断，淘汰最早记录不影响任务。
+            # Keep logs only for recent tasks, so a long-running WebUI does not hold memory forever.
+            # dict preserves insertion order; task logs are only for UI diagnosis, and dropping the oldest does not affect the task.
             if len(_task_logs) >= _MAX_LOG_TASKS:
                 oldest_task_id = next(iter(_task_logs))
                 _task_logs.pop(oldest_task_id, None)
@@ -46,7 +46,7 @@ def _append_task_log(task_id: str, message: str) -> None:
 
 
 def get_task_logs(task_id: str) -> list[str]:
-    """返回日志快照，避免页面渲染期间持有后台线程使用的锁。"""
+    """Return a log snapshot so page rendering does not hold the lock used by the background thread."""
     with _task_logs_lock:
         return list(_task_logs.get(task_id, ()))
 
@@ -62,13 +62,13 @@ def _run_generation(
     voxcpm_prompt_text: str = "",
 ) -> dict:
     """
-    在后台线程中执行现有视频流水线。
+    Run the existing video pipeline on a background thread.
 
-    Loguru 的 sink 是进程级资源，因此必须按当前工作线程过滤。否则同时运行的
-    API 任务或其它页面日志会混入当前任务。任务为下载、片段编码和心跳启动的
-    辅助线程通过 bind_log_scope 归属到工作线程，它们的日志同样要收集，否则
-    这些耗时阶段在 WebUI 里没有任何输出。页面只读取普通列表快照，不会从后台
-    线程访问 Streamlit session_state，从根源上避免刷新时的 delta 路径错乱。
+    A Loguru sink is process-wide, so it must be filtered to the current worker thread. Otherwise a concurrent
+    API task or another page's logs would mix into this task. Helper threads started for download, clip encoding, and heartbeats
+    are bound to the worker with bind_log_scope, and their logs must be collected too, or
+    those slow stages produce no WebUI output. The page only reads a plain list snapshot and never touches Streamlit session_state from a background
+    thread, which avoids delta path mix-ups on refresh.
     """
     log_handler_id = None
     worker_thread_id = threading.get_ident()
@@ -84,8 +84,8 @@ def _run_generation(
                 ),
             )
 
-        # 完整任务仍使用原来的配置锁，防止另一个 WebUI 会话在生成中途修改
-        # Provider、密钥等进程级配置，造成同一条视频前后使用不同设置。
+        # The full task still uses the original config lock, so another WebUI session cannot change
+        # the Provider, secrets, or other process-wide settings mid-generation and give one video two different setups.
         with config.runtime_config_lock():
             return tm.start(
                 task_id=task_id,
@@ -97,9 +97,9 @@ def _run_generation(
                 voxcpm_prompt_text=voxcpm_prompt_text,
             )
     except Exception as exc:
-        # tm.start 已负责把流水线异常转换成失败状态；这里额外保护日志 sink、
-        # 配置锁等 WebUI 包装层。任何后台线程异常都必须留下终态，不能让任务
-        # 管理器在工作线程退出后仍永久显示“生成中”。
+        # tm.start already turns pipeline exceptions into a failed state; this also guards the log sink,
+        # config lock, and other WebUI wrappers. Any background-thread exception must leave a terminal state, so the task
+        # manager does not stay on "generating" forever after the worker exits.
         error = f"{type(exc).__name__}: {exc}"
         failure = {
             "task_id": task_id,
@@ -141,10 +141,10 @@ def submit_generation(
     voxcpm_prompt_text: str = "",
 ) -> None:
     """
-    登记并提交 WebUI 视频生成任务，调用后立即返回。
+    Register and submit a WebUI video generation task, then return immediately.
 
-    任务状态必须在线程启动前写入。这样页面本次脚本执行结束时即可查询到任务，
-    浏览器刷新或 WebSocket 重连也不依赖旧页面内存中的占位符。
+    Task state must be written before the thread starts. The page can then query the task when this script run ends,
+    and a browser refresh or WebSocket reconnect does not depend on a placeholder left in the old page's memory.
     """
     task_params = params.model_copy(deep=True)
     # The subtitle timeline and nested preview parameters remain mutable in
@@ -162,8 +162,8 @@ def submit_generation(
         bytes(voxcpm_prompt_audio) if voxcpm_prompt_audio else None
     )
     voxcpm_prompt_text_snapshot = str(voxcpm_prompt_text or "")
-    # 已确认请求是冻结的数据对象，只在当前进程内传递。API Key 不会进入
-    # VideoParams、任务状态、日志或落盘历史，也不会受后续页面 rerun 影响。
+    # A confirmed request is a frozen data object passed only inside this process. The API key does not enter
+    # VideoParams, task state, logs, or saved history, and later page reruns do not change it.
     loomloom_request_snapshot = loomloom_video_request
     sm.state.update_task(
         task_id,
@@ -184,8 +184,8 @@ def submit_generation(
             voxcpm_prompt_text=voxcpm_prompt_text_snapshot,
         )
     except Exception as exc:
-        # 调度失败与流水线失败一样必须成为可查询状态，避免任务管理器永久显示
-        # “生成中”。保留异常类型便于从 Docker 或本机日志快速定位队列问题。
+        # A scheduling failure must become a queryable state just like a pipeline failure, so the task manager does not stay on
+        # "generating" forever. Keeping the exception type makes queue problems easy to find in Docker or local logs.
         error = f"{type(exc).__name__}: {exc}"
         sm.state.update_task(
             task_id,

@@ -1,3 +1,3 @@
-"""Script-to-Reality Renderer Studio 应用包元数据。"""
+"""Script-to-Reality Renderer Studio application package metadata."""
 
 __version__ = "1.3.8"

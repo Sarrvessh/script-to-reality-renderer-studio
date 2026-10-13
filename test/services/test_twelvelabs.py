@@ -18,9 +18,9 @@ RUN_INTEGRATION_TESTS = os.environ.get("MPT_RUN_INTEGRATION_TESTS", "").lower() 
 
 class TestTwelveLabsService(unittest.TestCase):
     """
-    TwelveLabs 集成是完全 opt-in 的：未配置 twelvelabs_api_keys 时所有函数
-    都必须是无副作用的 no-op，行为与不接入 TwelveLabs 完全一致。
-    这些用例全部用 mock 替换 SDK 客户端，CI 不依赖真实网络或真实 API key。
+    TwelveLabs integration is fully opt-in: when twelvelabs_api_keys is not configured, every function
+    must be a side-effect-free no-op, identical to not integrating TwelveLabs at all.
+    These cases all replace the SDK client with a mock; CI does not depend on a real network or a real API key.
     """
 
     def setUp(self):

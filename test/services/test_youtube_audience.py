@@ -1,4 +1,4 @@
-"""验证儿童受众声明的配置、任务快照和真实 HTTP 表单编码，不连接外部平台。"""
+"""Verify child-audience declaration config, task snapshots, and real HTTP form encoding, without connecting to an external platform."""
 
 from concurrent.futures import Future
 from email.parser import BytesParser
@@ -19,7 +19,7 @@ from app.services.upload_post import UploadPostService
 
 @pytest.fixture
 def upload_config():
-    """测试只使用虚构凭据，不能读取用户真实发布目标或发起真实上传。"""
+    """The test uses only fictional credentials and must not read the user's real publish target or start a real upload."""
     values = {
         "upload_post_enabled": True,
         "upload_post_api_key": "local-test-key",
@@ -38,7 +38,7 @@ def upload_config():
 def test_audience_payload_and_snapshot_override(
     tmp_path, upload_config, configured, extra
 ):
-    """显式任务快照优先于当前配置；没有元数据时也必须发送声明。"""
+    """An explicit task snapshot takes priority over the current config; the declaration must still be sent when there is no metadata."""
     upload_config["upload_post_youtube_made_for_kids"] = configured
     video = tmp_path / "video.mp4"
     video.write_bytes(b"test-media")
@@ -61,7 +61,7 @@ def test_audience_payload_and_snapshot_override(
 
 @pytest.mark.parametrize("invalid", ["false", "true", "", 0, 1, None, [], {}])
 def test_invalid_audience_never_uploads(tmp_path, upload_config, invalid):
-    """非法配置不能被隐式转换成受众声明，也不能继续上传。"""
+    """Illegal config must not be implicitly converted into an audience declaration, and must not continue the upload."""
     upload_config["upload_post_youtube_made_for_kids"] = invalid
     video = tmp_path / "video.mp4"
     video.touch()
@@ -73,7 +73,7 @@ def test_invalid_audience_never_uploads(tmp_path, upload_config, invalid):
 
 
 def test_other_platforms_ignore_youtube_audience(tmp_path, upload_config):
-    """非 YouTube 发布不读取或校验该设置，错误的受众配置也不能影响它们。"""
+    """Non-YouTube publishes do not read or validate this setting, and a wrong audience config must not affect them."""
     upload_config["upload_post_youtube_made_for_kids"] = "invalid"
     video = tmp_path / "video.mp4"
     video.touch()
@@ -98,7 +98,7 @@ def test_other_platforms_ignore_youtube_audience(tmp_path, upload_config):
 
 @pytest.mark.parametrize("selected", [False, True])
 def test_queued_audience_survives_config_change(upload_config, selected):
-    """延迟执行真实工作函数，验证队列等待期间配置变化不会串到已提交任务。"""
+    """Delay the real worker function and verify that a config change while queued does not leak into an already submitted task."""
     upload_config["upload_post_youtube_made_for_kids"] = selected
     state = MemoryState()
     state.update_task("audience-snapshot", state=task.const.TASK_STATE_COMPLETE)
@@ -139,7 +139,7 @@ def test_queued_audience_survives_config_change(upload_config, selected):
 
 @pytest.mark.parametrize("selected", [None, False, True])
 def test_real_http_multipart_audience(tmp_path, upload_config, selected):
-    """通过本机真实 HTTP 接收 multipart 请求，验证旧配置及 true/false 编码。"""
+    """Receive the multipart request over real local HTTP and verify old config plus true/false encoding."""
     received = []
 
     class Receiver(BaseHTTPRequestHandler):
@@ -162,7 +162,7 @@ def test_real_http_multipart_audience(tmp_path, upload_config, selected):
             self.wfile.write(b'{"success": true, "results": {"youtube": {"success": true}}}')
 
         def log_message(self, *_args):
-            # 本机接收器不打印请求头，测试输出无需包含认证信息。
+            # The local receiver does not print request headers, so test output need not include credentials.
             pass
 
     if selected is not None:
@@ -173,7 +173,7 @@ def test_real_http_multipart_audience(tmp_path, upload_config, selected):
     worker = Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
-        # 只访问环回地址，绕过开发机代理，避免把测试请求交给外部代理服务。
+        # Access only the loopback address, bypassing the dev-machine proxy so the test request is not handed to an external proxy.
         with (
             requests.Session() as session,
             patch.object(

@@ -177,8 +177,11 @@ def apply_shot_prompts(
     payload = [{"index": scene["index"], "narration": scene["narration"]} for scene in scenes]
     prompt = (
         "Return JSON only: {\"scenes\":[{\"index\":0,\"visual_prompt\":\"...\"}]}. "
-        "Write one text-to-video shot for each narration. Show only what that narration says. "
+        "You are describing footage for a factual narration. "
+        "Write one text-to-video shot for each narration. Show only what that narration says, in concrete filmable detail. "
+        "Do not invent people, places, objects, or events that the line does not mention. "
         "Do not add subjects from other scenes and do not rewrite the narration. "
+        "Do not use clickbait, slogans, camera-move lists, stock-footage wording, or slideshows. One clear shot per scene. "
         f"Style: {style or 'cinematic'}. Scenes: {json.dumps(payload, ensure_ascii=False)}"
     )
     try:
@@ -224,10 +227,12 @@ def build_storyboard(
     scenes = None
     if complete is not None:
         prompt = (
-            "Return JSON only. Create a timed storyboard for an original video. "
+            "Return JSON only. You are planning an original factual video. "
             f"Use at most {limit} scenes. Each scene duration is {int(duration)} seconds. "
             "Each scene needs narration and a visual_prompt for text-to-video. "
-            "Do not mention stock footage, photos, or slideshows. "
+            "Narration must be speakable, accurate, and free of titles or stage directions. "
+            "Each visual_prompt must show only what that scene's narration says, in concrete filmable detail. "
+            "Do not invent events. Do not mention stock footage, photos, or slideshows. "
             f"Style: {style or 'cinematic'}. Subject: {subject or script}. "
             f"Script: {script or subject}."
         )

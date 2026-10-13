@@ -21,10 +21,10 @@ from app.models.schema import VideoTransitionMode
 
 class TestCli(unittest.TestCase):
     def setUp(self):
-        # ``build_video_params`` 会读取本地 config.toml 的 [ui] 段作为默认值。
-        # 不做隔离时，这些测试就依赖开发机的状态：配置里保存的字体一旦已被
-        # 删除，``prepare_cli_files`` 的字体校验就会触发，让与此无关的测试以
-        # 误导性的报错失败。
+        # ``build_video_params`` reads the local config.toml [ui] section as defaults.
+        # Without isolation, these tests depend on the dev machine: once a font saved in the config has been
+        # deleted, ``prepare_cli_files`` font validation fires and an unrelated test fails with
+        # a misleading error.
         ui_patch = patch.dict(app_config.ui, {}, clear=True)
         ui_patch.start()
         self.addCleanup(ui_patch.stop)
@@ -125,11 +125,11 @@ class TestCli(unittest.TestCase):
         print_mock.assert_called_once()
 
     def test_force_utf8_console_keeps_unicode_result_printable(self):
-        """旧版 Windows 代码页下，成功结果中的 Unicode 字符不应让 CLI 失败。"""
+        """Under a legacy Windows code page, Unicode characters in a successful result must not make the CLI fail."""
         stdout_buffer = io.BytesIO()
         stderr_buffer = io.BytesIO()
-        # 使用 errors="strict" 还原问题现场：如果入口没有先切换到 UTF-8，
-        # U+202F 窄不换行空格和带圈数字都会在 cp1252 编码阶段直接抛异常。
+        # Use errors="strict" to recreate the failure: if the entry does not switch to UTF-8 first,
+        # both U+202F narrow no-break space and circled numbers raise during cp1252 encoding.
         legacy_stdout = io.TextIOWrapper(
             stdout_buffer,
             encoding="cp1252",
@@ -171,7 +171,7 @@ class TestCli(unittest.TestCase):
         log_error.assert_called_once()
 
     def test_run_cli_returns_error_for_structured_task_failure(self):
-        """任务服务返回结构化失败信息时，CLI 仍必须以非零状态退出。"""
+        """When the task service returns a structured failure, the CLI must still exit with a non-zero status."""
         failure = {
             "task_id": "task-structured-failure",
             "state": -1,
@@ -747,9 +747,9 @@ class TestCli(unittest.TestCase):
         self.assertEqual(params.sonilo_bgm_prompt, "warm acoustic")
 
     def test_video_music_prompt_reaches_every_ai_music_provider(self):
-        # video_music_prompt 与供应商无关，WebUI 为每个 AI 配乐供应商都写入
-        # 该字段。CLI 若只提供 Sonilo 专用参数，选中 ElevenLabs 的用户就无法
-        # 传提示词。期望值从运行时注册表推导，避免两份清单再次漂移。
+        # video_music_prompt is independent of the provider. The WebUI writes that field for every AI music provider.
+        # If the CLI offered only a Sonilo-specific argument, a user who selected ElevenLabs could not
+        # pass a prompt. The expected value is derived from the runtime registry so the two lists do not drift again.
         from app.services import task as task_service
 
         for provider in sorted(task_service._VIDEO_MUSIC_PROVIDERS):
@@ -768,9 +768,9 @@ class TestCli(unittest.TestCase):
             self.assertEqual(params.video_music_prompt, "warm acoustic")
 
     def test_video_music_prompt_requires_an_ai_music_provider(self):
-        # 下游只在 AI 配乐供应商分支读取该提示词。同一个 --bgm-type random 在
-        # 没有提示词时仍然可用，说明这里的拒绝来自提示词与供应商的组合，而不是
-        # 参数本身不被识别。
+        # Downstream reads that prompt only on the AI-music provider branch. The same --bgm-type random still works
+        # without a prompt, which shows the rejection comes from the prompt-and-provider combination, not from
+        # the argument itself being unrecognized.
         cli.parse_args(["--video-subject", "test", "--bgm-type", "random"])
         for bgm_type in ("random", "none"):
             error_output = io.StringIO()
@@ -872,7 +872,7 @@ class TestCli(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
 
     def test_positive_volume_custom_bgm_requires_file_before_task_start(self):
-        """启用自定义 BGM 时仍必须在任务启动前报告缺少文件。"""
+        """With custom BGM enabled, a missing file must still be reported before the task starts."""
         with (
             patch("app.services.task.start") as start,
             patch.object(cli.logger, "error") as log_error,
@@ -902,7 +902,7 @@ class TestCli(unittest.TestCase):
         self.assertEqual(args.bgm_type, "custom")
 
     def test_zero_volume_custom_bgm_skips_file_requirement_and_resolution(self):
-        """0 音量应忽略缺失或无效文件，与 WebUI 和视频服务保持一致。"""
+        """Volume 0 should ignore a missing or invalid file, consistent with the WebUI and the video service."""
         file_arguments = [[], ["--bgm-file", "missing-background.mp3"]]
         for extra_arguments in file_arguments:
             with self.subTest(extra_arguments=extra_arguments):
@@ -931,7 +931,7 @@ class TestCli(unittest.TestCase):
                 self.assertEqual(params.bgm_file, "")
 
     def test_custom_bgm_reuses_service_formats_and_managed_path_resolution(self):
-        """CLI 必须跟随 BGM 服务的格式白名单，不能继续单独限制为 MP3。"""
+        """The CLI must follow the BGM service's format allowlist and must not keep limiting it to MP3 on its own."""
         from app.services import bgm as bgm_service
 
         for extension in bgm_service.SUPPORTED_BGM_EXTENSIONS:
@@ -961,7 +961,7 @@ class TestCli(unittest.TestCase):
                 self.assertEqual(params.bgm_file, resolved_path)
 
     def test_custom_bgm_reports_service_resolution_failure_before_task_start(self):
-        """非法格式或越界路径应转换为包含统一格式范围的 CLI 错误。"""
+        """An illegal format or an out-of-bounds path should become a CLI error that includes the shared format range."""
         from app.services import bgm as bgm_service
 
         args = cli.parse_args(
@@ -1195,7 +1195,7 @@ class TestCli(unittest.TestCase):
         )
 
     def test_batch_accepts_openai_image_source(self):
-        """批量入口必须接受单任务 CLI 已支持的 OpenAI 文生图素材源。"""
+        """The batch entry must accept the OpenAI text-to-image material source that the single-task CLI already supports."""
         with tempfile.TemporaryDirectory() as temp_dir:
             manifest = Path(temp_dir) / "tasks.json"
             manifest.write_text(
@@ -1515,9 +1515,9 @@ class TestCli(unittest.TestCase):
 
     def test_video_clip_speed_is_reachable_from_the_cli(self):
         """
-        WebUI 的滑块把 video_clip_speed 写进 config.toml，批量清单也接受该字段
-        （见 _validate_batch_task_params），但 VideoParams 把它硬编码成 1.0 而不是
-        读取 config.ui，因此单任务命令行此前既没有对应参数、也拿不到保存值。
+        The WebUI slider writes video_clip_speed into config.toml, and the batch manifest accepts that field too
+        (see _validate_batch_task_params), but VideoParams hard-coded it to 1.0 instead of
+        reading config.ui, so the single-task command line previously had no matching argument and could not see the saved value.
         """
         explicit_params = cli.build_video_params(
             cli.parse_args(["--video-subject", "test", "--video-clip-speed", "1.5"])
@@ -1533,8 +1533,8 @@ class TestCli(unittest.TestCase):
 
     def test_video_clip_speed_range_matches_the_runtime_normalizer(self):
         """
-        CLI 的取值范围必须与 app/utils/utils.py 的 normalize_clip_speed() 以及
-        WebUI 滑块一致，否则命令行会接受运行时随后改写的取值。
+        The CLI range must match normalize_clip_speed() in app/utils/utils.py and
+        the WebUI slider, or the command line would accept a value the runtime then rewrites.
         """
         from app.utils import utils
 
@@ -1763,7 +1763,7 @@ class TestCli(unittest.TestCase):
         self.assertIn("exit with 2", help_text)
 
     def test_help_does_not_initialize_application_or_write_logs(self):
-        """帮助命令应独立于业务配置加载，便于用户查看和脚本采集。"""
+        """The help command should load independently of business config so users can read it and scripts can collect it."""
         project_root = Path(__file__).parent.parent.parent
         result = subprocess.run(
             [sys.executable, str(project_root / "cli.py"), "--help"],
@@ -1780,8 +1780,8 @@ class TestCli(unittest.TestCase):
 
 class TestCliUiDefaults(unittest.TestCase):
     """
-    CLI 默认值应跟随 WebUI：显式命令行参数优先，其次是 config.toml 的 [ui]
-    保存值，最后才是内置默认值。
+    CLI defaults should follow the WebUI: explicit command-line arguments win, then saved values in the [ui] section of config.toml,
+    and built-in defaults last.
     """
 
     UI_CONFIG = {
@@ -1854,9 +1854,9 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_ui_config_can_disable_subtitle_background(self):
         """
-        自相矛盾的 [ui] 配置不应让 CLI 中断：
-        `--no-subtitle-background-enabled` 加上颜色作为命令行组合是参数错误，
-        但作为保存的设置只表示背景被禁用。
+        A contradictory [ui] config must not abort the CLI:
+        `--no-subtitle-background-enabled` plus a color is an argument error as a command-line combination,
+        but as a saved setting it only means the background is disabled.
         """
         ui_config = dict(self.UI_CONFIG)
         ui_config["subtitle_background_enabled"] = False
@@ -1870,7 +1870,7 @@ class TestCliUiDefaults(unittest.TestCase):
         self.assertFalse(params.rounded_subtitle_background)
 
     def test_unusable_ui_config_values_fall_back_to_builtin_defaults(self):
-        """损坏的 config.toml 不应触发 traceback。"""
+        """A corrupt config.toml must not trigger a traceback."""
         ui_config = {
             "font_size": "sechzig",
             "text_fore_color": 42,
@@ -1890,9 +1890,9 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_saved_no_voice_mode_disables_tts(self):
         """
-        WebUI 把无配音作为独立的 voice_mode 保存，同时保留用户上一次真正选择
-        的音色，以便切回自动配音。CLI 必须遵循该模式，否则会重新启用 TTS 并
-        可能触发付费供应商请求。
+        The WebUI saves no-voice as its own voice_mode and also keeps the voice the user last really chose
+        so they can switch back to automatic voiceover. The CLI must follow that mode, or it turns TTS back on and
+        may trigger a paid provider request.
         """
         ui_config = {"voice_mode": "none", "voice_name": "gemini:Puck-Male"}
 
@@ -1904,7 +1904,7 @@ class TestCliUiDefaults(unittest.TestCase):
         self.assertEqual(params.voice_name, "no-voice")
 
     def test_explicit_voice_name_overrides_saved_no_voice_mode(self):
-        """命令行显式指定的音色优先级最高，保存的无配音模式不得覆盖它。"""
+        """A voice set explicitly on the command line has the highest priority; a saved no-voice mode must not override it."""
         ui_config = {"voice_mode": "none", "voice_name": "gemini:Puck-Male"}
 
         args = cli.parse_args(
@@ -1917,7 +1917,7 @@ class TestCliUiDefaults(unittest.TestCase):
         self.assertEqual(params.voice_name, "zh-CN-XiaoxiaoNeural-Female")
 
     def test_saved_tts_mode_keeps_saved_voice(self):
-        """voice_mode 为自动配音时，保存的音色仍然生效。"""
+        """When voice_mode is automatic voiceover, the saved voice still applies."""
         ui_config = {"voice_mode": "tts", "voice_name": "gemini:Puck-Male"}
 
         args = cli.parse_args(["--video-subject", "test"])
@@ -1929,8 +1929,8 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_enabling_background_without_color_keeps_saved_color(self):
         """
-        只传 --subtitle-background-enabled 时用户并未覆盖颜色，应沿用 WebUI
-        保存的颜色，而不是回退成黑色背景。
+        Passing only --subtitle-background-enabled does not override the color, so keep the color saved by the WebUI
+        instead of falling back to a black background.
         """
         ui_config = {"subtitle_background_color": "#654321"}
 
@@ -1944,7 +1944,7 @@ class TestCliUiDefaults(unittest.TestCase):
         self.assertEqual(params.text_background_color, "#654321")
 
     def test_enabling_background_falls_back_to_default_without_saved_color(self):
-        """没有可用的保存颜色时，仅开启背景应回退为默认背景。"""
+        """When no saved color is usable, turning the background on alone should fall back to the default background."""
         args = cli.parse_args(
             ["--video-subject", "test", "--subtitle-background-enabled"]
         )
@@ -1955,7 +1955,7 @@ class TestCliUiDefaults(unittest.TestCase):
         self.assertIs(params.text_background_color, True)
 
     def test_explicit_background_color_overrides_saved_color(self):
-        """命令行显式指定的背景颜色优先于保存值。"""
+        """A background color set explicitly on the command line wins over the saved value."""
         ui_config = {"subtitle_background_color": "#654321"}
 
         args = cli.parse_args(
@@ -1975,9 +1975,9 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_saved_upload_mode_disables_tts(self):
         """
-        上传自备音频的模式同样表示“不要自动配音”，而 [ui] 不保存文件路径，
-        CLI 无法复现该上传。此时沿用保存的音色会静默触发付费 TTS 请求，
-        因此与无配音一样映射为 no-voice；需要配音时显式传 --voice-name。
+        Upload-your-own-audio mode also means "do not voice automatically", and [ui] does not save the file path,
+        so the CLI cannot reproduce that upload. Reusing the saved voice would silently trigger a paid TTS request,
+        so it maps to no-voice just like no-voice; pass --voice-name explicitly when voiceover is needed.
         """
         ui_config = {"voice_mode": "upload", "voice_name": "gemini:Puck-Male"}
 
@@ -1989,7 +1989,7 @@ class TestCliUiDefaults(unittest.TestCase):
         self.assertEqual(params.voice_name, "no-voice")
 
     def test_explicit_voice_name_overrides_saved_upload_mode(self):
-        """命令行显式指定的音色同样优先于保存的上传模式。"""
+        """A voice set explicitly on the command line also wins over a saved upload mode."""
         ui_config = {"voice_mode": "upload", "voice_name": "gemini:Puck-Male"}
 
         args = cli.parse_args(
@@ -2003,8 +2003,8 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_saved_color_alone_enables_background(self):
         """
-        WebUI 总是同时写入开关和颜色，只保存颜色属于手工编辑的配置。
-        此时保存的颜色本身就表明用户想要背景，因此按开启处理。
+        The WebUI always writes the switch and the color together; saving only the color is a hand-edited config.
+        The saved color itself means the user wants a background, so treat it as on.
         """
         ui_config = {"subtitle_background_color": "#654321"}
 
@@ -2016,7 +2016,7 @@ class TestCliUiDefaults(unittest.TestCase):
         self.assertEqual(params.text_background_color, "#654321")
 
     def test_ui_config_supplies_voice_and_stroke_defaults(self):
-        """配音音量、语速、描边和字幕开关同样保存在 [ui] 中，需要一并沿用。"""
+        """Voice volume, speech rate, stroke, and the subtitle switch are also saved in [ui] and must be reused together."""
         ui_config = {
             "voice_volume": 0.5,
             "voice_rate": 1.3,
@@ -2037,7 +2037,7 @@ class TestCliUiDefaults(unittest.TestCase):
         self.assertFalse(params.subtitle_enabled)
 
     def test_cli_flags_take_precedence_over_saved_voice_and_stroke(self):
-        """命令行显式传入的值优先于这些保存值。"""
+        """Values passed explicitly on the command line win over those saved values."""
         ui_config = {
             "voice_volume": 0.5,
             "voice_rate": 1.3,
@@ -2072,7 +2072,7 @@ class TestCliUiDefaults(unittest.TestCase):
         self.assertTrue(params.subtitle_enabled)
 
     def test_saved_integers_are_accepted_for_float_fields(self):
-        """TOML 中的整数同样是合法音量和语速，应转换后使用而不是丢弃。"""
+        """Integers in TOML are also legal volume and speech-rate values and should be converted and used, not discarded."""
         ui_config = {"voice_volume": 1, "voice_rate": 2, "stroke_width": 3}
 
         args = cli.parse_args(["--video-subject", "test"])
@@ -2086,8 +2086,8 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_saved_values_out_of_range_fall_back_to_builtin_defaults(self):
         """
-        保存值按与命令行相同的规则校验：音量不可为负、语速必须为正、
-        颜色必须是 #RRGGBB。不合法的值回退到内置默认值。
+        Saved values are validated with the same rules as the command line: volume cannot be negative, speech rate must be positive,
+        and color must be #RRGGBB. Illegal values fall back to the built-in defaults.
         """
         ui_config = {
             "voice_volume": -1.0,
@@ -2110,8 +2110,8 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_stop_at_subtitle_overrides_saved_subtitle_disabled(self):
         """
-        `--stop-at subtitle` 明确要求生成字幕。保存的关闭状态不应让该阶段
-        变成空操作，也不应像显式 --no-subtitle-enabled 那样报参数错误。
+        `--stop-at subtitle` explicitly asks for subtitles. A saved off state must not turn that stage
+        into a no-op, and must not report an argument error the way an explicit --no-subtitle-enabled does.
         """
         ui_config = {"subtitle_enabled": False}
 
@@ -2125,7 +2125,7 @@ class TestCliUiDefaults(unittest.TestCase):
         self.assertTrue(params.subtitle_enabled)
 
     def test_explicit_no_subtitle_still_rejects_stop_at_subtitle(self):
-        """显式关闭字幕与 `--stop-at subtitle` 组合仍然是参数错误。"""
+        """Explicitly turning subtitles off combined with `--stop-at subtitle` is still an argument error."""
         with self.assertRaises(SystemExit) as cm:
             cli.parse_args(
                 [
@@ -2141,8 +2141,8 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_saved_subtitle_position_is_validated_and_applied(self):
         """
-        字幕位置此前只依赖 VideoParams 的字段默认值，该默认值在模块导入时
-        求值一次，既无法校验也无法在测试中替换。现在与其它字段一样显式解析。
+        Subtitle position used to depend only on the VideoParams field default, which is evaluated once at import
+        and could neither be validated nor replaced in tests. It is now parsed explicitly like the other fields.
         """
         ui_config = {"subtitle_position": "custom", "custom_position": 42.5}
 
@@ -2156,9 +2156,9 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_two_thirds_bottom_subtitle_position_is_supported(self):
         """
-        WebUI 的「距底部 2/3」会把 two_thirds_bottom 写进 config.toml，
-        app/services/video.py 也按该取值渲染。CLI 此前只认识另外四个位置，
-        导致同一个 config.toml 在两个入口产出不同画面。
+        The WebUI "2/3 from the bottom" writes two_thirds_bottom into config.toml,
+        and app/services/video.py renders that value too. The CLI used to know only the other four positions,
+        so the same config.toml produced different pictures from the two entries.
         """
         explicit_params = cli.build_video_params(
             cli.parse_args(
@@ -2183,8 +2183,8 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_subtitle_positions_stay_aligned_with_the_webui(self):
         """
-        两个入口共享同一份 config.toml，因此 CLI 必须接受 WebUI 能保存的每一个
-        字幕位置，否则保存值会在命令行入口被静默换成 bottom。
+        The two entries share one config.toml, so the CLI must accept every subtitle position the WebUI can save,
+        or the saved value is silently replaced with bottom at the command-line entry.
         """
         source = (Path(__file__).parent.parent.parent / "webui" / "Main.py").read_text(
             encoding="utf-8"
@@ -2207,8 +2207,8 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_subtitle_style_options_follow_the_flag_then_the_saved_value(self):
         """
-        展示模式与入场动画随「逐词字幕 + 弹跳动画」加入，当时只改了 WebUI 与模型
-        字段默认值：命令行既没有开关，也不显式读取 [ui] 保存值。
+        Display mode and entrance animation arrived with "word-by-word subtitles + bounce animation", and only the WebUI and model
+        field defaults were changed then: the command line had no switch and did not explicitly read the [ui] saved value.
         """
         for flag, field, value in (
             ("--subtitle-display-mode", "subtitle_display_mode", "word_by_word"),
@@ -2227,9 +2227,9 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_subtitle_style_values_stay_aligned_with_the_model_and_the_webui(self):
         """
-        取值必须与 app/models/schema.py 的权威枚举一致，并覆盖 WebUI 下拉框能保存
-        的每一个值；将来新增模式时这里会先失败，避免再次出现「WebUI 支持、命令行
-        不支持」的落差。
+        Values must match the authoritative enum in app/models/schema.py and cover every value the WebUI dropdown can save;
+        when a mode is added later this fails first, so the gap "the WebUI supports it, the command line
+        does not" does not appear again.
         """
         for cli_values, model_values in (
             (cli._SUBTITLE_DISPLAY_MODE_VALUES, app_schema._SUBTITLE_DISPLAY_MODES),
@@ -2257,7 +2257,7 @@ class TestCliUiDefaults(unittest.TestCase):
             self.assertEqual(sorted(webui_values - set(cli_values)), [], name)
 
     def test_unusable_saved_subtitle_position_falls_back(self):
-        """超出取值范围的保存位置回退到内置默认值。"""
+        """A saved position outside the allowed range falls back to the built-in default."""
         ui_config = {"subtitle_position": "diagonal", "custom_position": 150.0}
 
         args = cli.parse_args(["--video-subject", "test"])
@@ -2270,9 +2270,9 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_invalid_saved_background_color_with_saved_enable_flag(self):
         """
-        保存的背景颜色同样要按 #RRGGBB 校验。非法值若留在 VideoParams 中，
-        渲染时会变成黑色，而同色检测比较的仍是原始非法字符串，导致黑底黑字
-        无法被发现。
+        A saved background color must also be validated as #RRGGBB. If an illegal value stays in VideoParams,
+        rendering turns it black, while the same-color check still compares the original illegal string, so black text on a black background
+        cannot be detected.
         """
         ui_config = {
             "subtitle_background_enabled": True,
@@ -2287,7 +2287,7 @@ class TestCliUiDefaults(unittest.TestCase):
         self.assertIs(params.text_background_color, True)
 
     def test_invalid_saved_background_color_with_explicit_enable_flag(self):
-        """显式开启背景时，非法的保存颜色同样回退到默认背景。"""
+        """When the background is turned on explicitly, an illegal saved color also falls back to the default background."""
         ui_config = {"subtitle_background_color": "not-a-color"}
 
         args = cli.parse_args(
@@ -2301,8 +2301,8 @@ class TestCliUiDefaults(unittest.TestCase):
 
     def test_invalid_saved_background_color_without_enable_flag(self):
         """
-        只保存了非法颜色且没有开关时，不应据此推断出需要背景，
-        因此保持 VideoParams 的默认关闭状态。
+        If only an illegal color was saved and there is no switch, do not infer that a background is needed,
+        so keep VideoParams' default off state.
         """
         ui_config = {"subtitle_background_color": "not-a-color"}
 

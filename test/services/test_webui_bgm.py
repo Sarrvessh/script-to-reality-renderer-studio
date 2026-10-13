@@ -23,7 +23,7 @@ TEST_LOCALES = ("en", "zh")
 
 
 def _valid_wav_bytes() -> bytes:
-    """生成一个很短的标准 WAV，避免测试依赖仓库外部音频或系统录音文件。"""
+    """Generate a very short standard WAV so the test does not depend on audio outside the repo or a system recording."""
     output = io.BytesIO()
     with wave.open(output, "wb") as wav_file:
         wav_file.setnchannels(1)
@@ -36,14 +36,14 @@ def _valid_wav_bytes() -> bytes:
 class TestWebuiBackgroundMusic(unittest.TestCase):
     @staticmethod
     def _translation(locale, key):
-        """按测试语言读取期望文案，避免断言反过来依赖某一种展示语言。"""
+        """Read the expected copy for the test language so assertions do not depend on one display language."""
         locale_data = json.loads(
             (I18N_DIR / f"{locale}.json").read_text(encoding="utf-8")
         )
         return locale_data["Translation"][key]
 
     def _widget_by_key(self, elements, key_prefix):
-        """通过稳定业务 key 查找控件，展示标签翻译后仍能命中同一控件。"""
+        """Find the widget by a stable business key so it still matches after the display label is translated."""
         widget = next(
             (
                 item
@@ -58,12 +58,12 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
 
     def _open_custom_bgm_panel(self, locale):
         app = AppTest.from_file(str(WEBUI_MAIN), default_timeout=30)
-        # CI 没有本机 config.toml 中保存的语言。显式覆盖 session locale，既能
-        # 复现 CI 的英文默认值，也能保护开发者常用的中文界面回归。
+        # CI has no language saved in the local config.toml. Explicitly override the session locale so the test can both
+        # reproduce CI's English default and protect the Chinese UI regression developers use often.
         app.session_state["ui_language"] = locale
         app.run()
         source_select = self._widget_by_key(app.selectbox, "bgm_type_select")
-        # stable_selectbox 的真实选项是业务值，展示文案才会随 locale 变化。
+        # The real options of stable_selectbox are business values; only the display copy changes with locale.
         source_select.set_value("custom").run()
         return app
 
@@ -98,7 +98,7 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
         return self._widget_by_key(app.selectbox, "bgm_volume_select")
 
     def test_preset_song_selection_is_previewed_and_persisted(self):
-        """切换预设歌曲后应立即更新播放器，并保留稳定的文件名配置。"""
+        """Switching the preset song should update the player immediately and keep a stable filename in config."""
         with tempfile.TemporaryDirectory() as temp_dir:
             first_song = Path(temp_dir) / "first.wav"
             second_song = Path(temp_dir) / "second.wav"
@@ -138,7 +138,7 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
             self.assertEqual([str(item.value) for item in app.exception], [])
 
     def test_empty_preset_song_list_shows_localized_warning(self):
-        """没有可用歌曲时应给出当前语言提示，而不是渲染无效选择框。"""
+        """When no song is available, show a prompt in the current language instead of rendering an invalid select box."""
         for locale in TEST_LOCALES:
             with self.subTest(locale=locale):
                 test_ui = dict(config.ui, language=locale, bgm_type="random")
@@ -167,7 +167,7 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
                 self.assertEqual([str(item.value) for item in app.exception], [])
 
     def test_task_restore_selects_the_original_preset_song(self):
-        """恢复历史任务时不能被全局保存的预设歌曲覆盖。"""
+        """Restoring a historical task must not be overwritten by the globally saved preset song."""
         with tempfile.TemporaryDirectory() as temp_dir:
             saved_song = Path(temp_dir) / "saved.wav"
             restored_song = Path(temp_dir) / "restored.wav"
@@ -209,7 +209,7 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
             self.assertEqual([str(item.value) for item in app.exception], [])
 
     def test_missing_preset_song_does_not_interrupt_the_page(self):
-        """枚举后文件失效时应显示提示，并且不能创建损坏的播放器。"""
+        """When a file becomes invalid after enumeration, show a prompt and do not create a broken player."""
         missing_song = Path(tempfile.gettempdir()) / "mpt-missing-preset.wav"
         missing_song.unlink(missing_ok=True)
         test_ui = dict(config.ui, language="en", bgm_type="random")
@@ -244,8 +244,8 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
                             "audio/mp4",
                         )
                     ).run()
-                    # 非法文件留在上传控件时，音量调整会触发 Streamlit rerun。
-                    # 缓存命中只能重绘错误，不能重复校验或重复记录 warning。
+                    # When an illegal file stays in the upload widget, changing the volume triggers a Streamlit rerun.
+                    # A cache hit may only redraw the error; it must not validate again or log the warning again.
                     self._volume_select(app).set_value(0.4).run()
 
                 rejection_logs = [
@@ -272,8 +272,8 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
                     ("valid.wav", _valid_wav_bytes(), "audio/wav")
                 ).run()
 
-                # 首次校验通过后，把服务函数改成显式失败；如果音量 rerun
-                # 错误地再次调用 FFmpeg，AppTest 会收到 AssertionError。
+                # After the first validation passes, change the service function to fail explicitly; if the volume rerun
+                # wrongly calls FFmpeg again, AppTest receives an AssertionError.
                 with patch.object(
                     bgm,
                     "validate_bgm_upload",
@@ -295,7 +295,7 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
                 self.assertEqual(len(app.get("audio")), 1)
 
     def test_zero_volume_defers_custom_upload_validation_until_enabled(self):
-        """0 音量保留上传选择，但必须等重新启用 BGM 后才校验和预览。"""
+        """Volume 0 keeps the upload selection, but validation and preview must wait until BGM is enabled again."""
         app = self._open_custom_bgm_panel("en")
         self._volume_select(app).set_value(0.0).run()
 
@@ -310,8 +310,8 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
         self.assertFalse(any("deferred.wav" in item.value for item in app.info))
         self.assertEqual(len(app.get("audio")), 0)
 
-        # 文件仍保留在 Streamlit 会话中。用户调高音量后，同一次 rerun 应自动
-        # 完成校验并显示播放器，不需要重新选择文件。
+        # The file is still in the Streamlit session. After the user raises the volume, the same rerun should automatically
+        # finish validation and show the player, without choosing the file again.
         with patch.object(bgm, "validate_bgm_upload") as validation:
             self._volume_select(app).set_value(0.2).run()
 
@@ -346,7 +346,7 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
                 self.assertEqual(len(app.get("audio")), 0)
 
     def test_sonilo_source_shows_masked_prefilled_key_and_optional_prompt(self):
-        """选择 Sonilo 后应回填本机 Key，且保持密码显示模式。"""
+        """After selecting Sonilo, fill in the local key and keep password display mode."""
         for locale in TEST_LOCALES:
             with self.subTest(locale=locale):
                 test_config = dict(config.app, sonilo_api_key="saved-test-key")
@@ -368,8 +368,8 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
                     self._translation(locale, "Sonilo API Key"),
                 )
                 self.assertIn("platform.sonilo.com", api_key_input.label)
-                # AppTest 的 element.type 表示控件种类（text_input）；密码模式
-                # 保存在底层 protobuf 枚举中，必须检查该字段才能验证真实渲染。
+                # AppTest's element.type is the widget kind (text_input); password mode
+                # is stored in the underlying protobuf enum, and that field must be checked to verify the real render.
                 self.assertEqual(
                     api_key_input.proto.type, api_key_input.proto.PASSWORD
                 )
@@ -397,10 +397,10 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
         )
 
     def test_zero_volume_does_not_require_sonilo_key(self):
-        """Sonilo 音量为 0 时，WebUI 不应继续显示 API Key 必填警告。"""
+        """When Sonilo volume is 0, the WebUI should not keep showing an API key required warning."""
         test_config = dict(config.app, sonilo_api_key="")
-        # BGM 音量现在是可持久化的用户偏好。显式给定本测试的
-        # 非零初始条件，避免其他 AppTest 会话保存的默认值影响前置断言。
+        # BGM volume is now a persistable user preference. Explicitly set this test's
+        # nonzero initial condition so a default saved by another AppTest session does not affect the precondition assertion.
         test_ui = dict(config.ui, bgm_volume=0.2)
         required_warning = self._translation("en", "Sonilo API Key Required")
         with (
@@ -417,7 +417,7 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
         self.assertEqual([str(item.value) for item in app.exception], [])
 
     def test_elevenlabs_source_reuses_masked_tts_key_and_shows_prompt(self):
-        """配乐和 TTS 应共用 Key，并保持密码输入和独立音乐模型配置。"""
+        """Music and TTS should share a key, and keep password input plus an independent music-model setting."""
         for locale in TEST_LOCALES:
             with self.subTest(locale=locale):
                 test_config = dict(
@@ -458,7 +458,7 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
                 self.assertEqual([str(item.value) for item in app.exception], [])
 
     def test_elevenlabs_tts_and_music_share_one_api_key_widget(self):
-        """同时启用配音和配乐时只能存在一个 Key 状态，修改后不能被旧值覆盖。"""
+        """When voiceover and music are both enabled there can be only one key state, and a change must not be overwritten by the old value."""
         test_config = dict(config.elevenlabs, api_key="key-A")
         test_ui = dict(config.ui, voice_mode="tts")
         with (
@@ -528,7 +528,7 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
         )
 
     def test_elevenlabs_connection_reports_paid_plan_requirement(self):
-        """免费套餐错误应使用当前界面的自然语言，而不是直接展示英文异常。"""
+        """A free-plan error should use the current UI's natural language instead of showing the English exception directly."""
         for locale in TEST_LOCALES:
             with self.subTest(locale=locale):
                 test_config = dict(
@@ -562,7 +562,7 @@ class TestWebuiBackgroundMusic(unittest.TestCase):
                 )
 
     def test_zero_volume_does_not_require_elevenlabs_key(self):
-        """ElevenLabs 音量为 0 时同样不应要求 Key 或调用付费服务。"""
+        """When ElevenLabs volume is 0, it likewise should not require a key or call a paid service."""
         test_config = dict(config.elevenlabs, api_key="")
         required_warning = self._translation(
             "en", "ElevenLabs API Key Required"

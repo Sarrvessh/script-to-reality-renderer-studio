@@ -24,6 +24,31 @@ const sourceLabels: Record<string, string> = {
   openrouter: "OpenRouter video",
 };
 
+const sceneChecks: [string, string][] = [
+  ["OpenCLIP ViT-B-32", "Compares a frame with the scene prompt"],
+  ["YOLOv8n", "Finds objects and sets the crop"],
+  ["DIS optical flow", "Rejects a frozen shot"],
+  ["Laplacian blur", "Rejects a soft frame"],
+  ["Black-frame ratio", "Rejects a blank frame"],
+  ["DCT perceptual hash", "Rejects a repeated frame"],
+  ["SSIM", "Rejects a shot that barely changes"],
+];
+
+function stageIndex(progress: number) {
+  if (progress < 15) return 0;
+  if (progress < 30) return 1;
+  if (progress < 45) return 2;
+  if (progress < 70) return 3;
+  return 4;
+}
+
+function sceneLine(scene: { index: number; status: string; score?: number; warnings?: string[] }) {
+  const decision = scene.status === "accepted" ? "accepted" : "rejected";
+  const score = typeof scene.score === "number" ? ` Match score ${scene.score.toFixed(2)}.` : "";
+  const why = scene.warnings?.length ? ` ${scene.warnings.join("; ")}.` : "";
+  return `Scene ${Number(scene.index) + 1} ${decision}.${score}${why}`;
+}
+
 const sourceGroups: { label: string; ids: string[] }[] = [
   { label: "Stock video", ids: ["pexels", "pixabay", "coverr"] },
   { label: "AI video", ids: ["openrouter", "wavespeed", "volcengine_seedance", "ofox", "metaso_minimax", "muapi", "loomloom"] },
@@ -795,6 +820,7 @@ export function Dashboard() {
     return error ? <p className="notice notice-bad" role="alert">{error}</p> : <p className="meta">Loading…</p>;
   }
 
+  const writingScript = busy.startsWith("Writing the script") || busy.startsWith("Starting the paid script");
   const video = task?.videos?.find((item) => item.endsWith(".mp4")) ?? "";
   const clipChoices = draft.video_source === "metaso_minimax" || draft.video_source === "muapi"
     ? [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -803,8 +829,9 @@ export function Dashboard() {
   return (
     <>
       <h1 className="page-title">Generate</h1>
+      <p className="lede">Name the subject, write or generate the narration, then render. Generated scenes are checked before a rejected clip can be assembled.</p>
       {error ? <p className="notice notice-bad" role="alert">{error}</p> : null}
-      {busy ? <p className="meta" role="status">{busy}</p> : null}
+      {busy && !writingScript ? <p className="meta" role="status">{busy}</p> : null}
 
       <section className="section">
         <h2>Video Script</h2>
@@ -886,7 +913,13 @@ export function Dashboard() {
           )}
           <div className="block">
             <label htmlFor="script">Video script</label>
-            <textarea id="script" className="area" style={{ minHeight: "160px" }} value={draft.video_script} onChange={(event) => patch({ video_script: event.target.value })} />
+            {writingScript ? (
+              <div className="compose" role="status">
+                <div className="compose-lines" aria-hidden="true"><span /><span /><span /><span /></div>
+                <p className="meta">Writing the narration from the subject. The script appears in the field when it is ready.</p>
+              </div>
+            ) : null}
+            <textarea id="script" className="area" style={{ minHeight: "160px" }} aria-busy={writingScript} value={draft.video_script} onChange={(event) => patch({ video_script: event.target.value })} />
           </div>
           <div className="block">
             <div className="actions">
@@ -951,7 +984,7 @@ export function Dashboard() {
           ) : null}
           {draft.video_source === "openrouter" ? (
             <div className="block stack">
-              <p className="meta">One paid clip. Narration, subtitles, and export stay on the existing pipeline. Stock footage is not used. A failed request is not sent again.</p>
+              <p className="meta">Each spoken slice becomes its own clip. Stock footage is not used. A rejected clip is left out. Accepted clips are kept, and a failed scene is tried again after the others finish.</p>
               <div className="row">
                 <label htmlFor="or-model">Model</label>
                 <select id="or-model" className="select" value={orModel} onChange={(event) => {
@@ -1296,6 +1329,19 @@ export function Dashboard() {
         </div>
       </section>
 
+      <section className="section" id="scene-checks">
+        <h2>Scene checks</h2>
+        <div className="group">
+          {sceneChecks.map(([name, job]) => (
+            <div className="row" key={name}>
+              <span>{name}</span>
+              <span className="meta">{job}</span>
+            </div>
+          ))}
+        </div>
+        <p className="section-foot">These checks run on each generated scene. Motion uses DIS optical flow, or Farneback when DIS is unavailable. Stock footage is not scored. A score is a measurement from the named model, not a guarantee that the scene is correct.</p>
+      </section>
+
       <section className="section">
         <h2>Generate</h2>
         <div className="group">
@@ -1327,21 +1373,32 @@ export function Dashboard() {
           {social ? <pre className="area">{social}</pre> : null}
           {task ? (
             <div className="block stack">
-              <progress className="meter" max={100} value={task.progress} />
+              {task.state === 4 ? (
+                <div className="gate">
+                  <div className={`gate-frame${draft.aspect === "16:9" ? " wide" : ""}`} aria-hidden="true">
+                    <span className="gate-scan" />
+                  </div>
+                  <ol className="gate-steps">
+                    {(draft.video_source === "openrouter"
+                      ? ["Preparing the narration", "Recording the voice", "Timing the captions", "Generating clips and checking each scene", "Rendering the master"]
+                      : ["Preparing the narration", "Recording the voice", "Timing the captions", "Cutting the footage", "Rendering the master"]
+                    ).map((label, index) => (
+                      <li key={label} aria-current={index === stageIndex(task.progress) ? "step" : undefined}>{label}</li>
+                    ))}
+                  </ol>
+                </div>
+              ) : null}
+              <progress className="meter" max={100} value={task.progress} aria-label="Render progress" />
               <p role="status">
                 {task.state === -1
                   ? `Generation failed${task.failed_stage ? ` during ${task.failed_stage}` : ""}. ${task.error || "Check the API log for the stage that stopped."}`
-                  : `${progressLabel(task.progress)} · ${task.progress}%`}
+                  : `${draft.video_source === "openrouter" && task.progress >= 45 && task.progress < 70 ? "Generating clips and checking each scene" : progressLabel(task.progress)} · ${task.progress}%`}
               </p>
-              {task.autonomous_spent_usd ? <p className="meta">Spent ${task.autonomous_spent_usd}{task.cv_report?.disclaimer ? `. ${task.cv_report.disclaimer}` : ""}</p> : null}
+              {task.autonomous_spent_usd ? <p className="meta">Spent ${task.autonomous_spent_usd}. {task.cv_report?.disclaimer || "Scores are measurements from the named model. They are not a guarantee of correctness."}</p> : null}
               {task.scene_status?.length ? (
-                <ul className="meta">
+                <ul className="scene-list">
                   {task.scene_status.map((scene) => (
-                    <li key={`${scene.index}-${scene.status}`}>
-                      Scene {Number(scene.index) + 1}: {scene.status}
-                      {typeof scene.score === "number" ? ` · score ${scene.score.toFixed(2)}` : ""}
-                      {scene.warnings?.length ? ` · ${scene.warnings.join("; ")}` : ""}
-                    </li>
+                    <li className="meta" key={`${scene.index}-${scene.status}-${scene.score ?? "none"}`}>{sceneLine(scene)}</li>
                   ))}
                 </ul>
               ) : null}
