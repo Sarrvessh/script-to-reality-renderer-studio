@@ -95,7 +95,11 @@ def _iter_video_cache_entries(include_temp: bool = False) -> Iterator[_VideoCach
                 # Do not follow symlinks, so cleanup cannot leave the default cache directory.
                 if not entry.is_file(follow_symlinks=False):
                     continue
-                stat_result = entry.stat(follow_symlinks=False)
+                # On Windows, DirEntry.stat() can report st_dev/st_ino as zero
+                # while os.stat() reports the real file identity. Use the same
+                # API here and before deletion so replacement detection works
+                # consistently on every platform.
+                stat_result = os.stat(entry.path, follow_symlinks=False)
             except OSError as exc:
                 logger.warning(
                     f"failed to inspect video cache file: file={entry.name}, error={exc}"

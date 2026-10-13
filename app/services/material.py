@@ -1157,7 +1157,7 @@ def save_video(video_url: str, save_dir: str = "") -> str:
     # not sent in HTTP requests, so they do not affect the downloaded bytes.
     url_hash = utils.md5(video_url.split("#", 1)[0])
     video_id = f"vid-{url_hash}"
-    video_path = f"{save_dir}/{video_id}.mp4"
+    video_path = os.path.join(save_dir, f"{video_id}.mp4")
 
     # if video already exists, return the path
     if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
@@ -2169,13 +2169,29 @@ def download_videos(
         minimum_duration: int,
         video_aspect: VideoAspect,
     ) -> List[MaterialInfo]:
-        return _search_videos_with_cache(
+        items = _search_videos_with_cache(
             provider=provider,
             search_videos=remote_search_videos,
             search_term=search_term,
             minimum_duration=minimum_duration,
             video_aspect=video_aspect,
         )
+        if items:
+            return items
+        from app.services.llm import fallback_search_queries
+
+        for broader in fallback_search_queries(search_term):
+            items = _search_videos_with_cache(
+                provider=provider,
+                search_videos=remote_search_videos,
+                search_term=broader,
+                minimum_duration=minimum_duration,
+                video_aspect=video_aspect,
+            )
+            if items:
+                logger.info(f"no results for '{search_term}', used broader query '{broader}'")
+                return items
+        return []
 
     material_directory = config.app.get("material_directory", "").strip()
     if material_directory == "task":

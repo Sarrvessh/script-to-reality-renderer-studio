@@ -5,15 +5,14 @@ Scores are calibrated heuristics. They are not a guarantee that a scene is corre
 
 from __future__ import annotations
 
-import logging
 import os
 import subprocess
 import threading
 from typing import Any, Callable
 
 import numpy as np
+from loguru import logger
 
-logger = logging.getLogger(__name__)
 DISCLAIMER = "Scores are measurements from the named model. They are not a guarantee of correctness."
 # ViT-B-32 image-text cosine similarity. Matched frames usually land near 0.25 or higher.
 DEFAULT_THRESHOLDS = {
@@ -105,7 +104,9 @@ def sample_frames(path: str, count: int = 8) -> list[np.ndarray]:
             frames.append(frame)
     capture.release()
     if not frames:
+        logger.info("cv Frame sampling: failed — No readable frames in the clip.")
         raise RuntimeError(f"No readable frames in {path}.")
+    logger.info(f"cv Frame sampling: passed — {len(frames)} frame(s) from the clip.")
     return frames
 
 
@@ -170,15 +171,16 @@ def ssim(left: np.ndarray, right: np.ndarray) -> float:
     return float(((2 * mu_a * mu_b + c1) * (2 * cov + c2)) / ((mu_a ** 2 + mu_b ** 2 + c1) * (var_a + var_b + c2) + 1e-9))
 
 
-def motion_metrics(frames: list[np.ndarray]) -> dict[str, float]:
+def motion_metrics(frames: list[np.ndarray]) -> dict[str, float | str]:
     cv2 = _cv2()
+    backend = "dis" if hasattr(cv2, "DISOpticalFlow_create") else "farneback"
     if len(frames) < 2:
-        return {"mean_flow": 0.0, "max_jump": 0.0, "frozen": 1.0}
+        return {"mean_flow": 0.0, "max_jump": 0.0, "frozen": 1.0, "backend": backend}
     magnitudes = []
     previous = _gray(frames[0])
     for frame in frames[1:]:
         gray = _gray(frame)
-        if hasattr(cv2, "DISOpticalFlow_create"):
+        if backend == "dis":
             flow = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_FAST).calc(previous, gray, None)
         else:
             flow = cv2.calcOpticalFlowFarneback(previous, gray, None, 0.5, 2, 15, 2, 5, 1.2, 0)
@@ -190,6 +192,7 @@ def motion_metrics(frames: list[np.ndarray]) -> dict[str, float]:
         "mean_flow": mean_flow,
         "max_jump": float(max(jumps) if jumps else 0.0),
         "frozen": 1.0 if mean_flow < DEFAULT_THRESHOLDS["frozen_flow"] else 0.0,
+        "backend": backend,
     }
 
 
@@ -365,7 +368,7 @@ def semantic_similarity(frame: np.ndarray, description: str, embed: Callable[[np
 
 
 def _capability_report(exc: CVCapabilityError) -> dict[str, Any]:
-    logger.warning("cv capability degraded component=%s", exc.component)
+    logger.warning(f"cv {exc.component}: failed — {exc}")
     return {
         "accepted": False,
         "capability_failure": True,
@@ -374,7 +377,98 @@ def _capability_report(exc: CVCapabilityError) -> dict[str, Any]:
         "refinement": str(exc),
         "disclaimer": DISCLAIMER,
         "metrics": {"semantic_backend": "unavailable", "detector": "unavailable", "semantic_similarity": None},
+        "components": [
+            _component(exc.component, exc.component, "failed", str(exc)),
+        ],
     }
+
+
+def _component(check_id: str, name: str, status: str, detail: str) -> dict[str, Any]:
+    """One showcase line for a named check. Status is passed, warning, or failed."""
+    logger.info(f"cv {name}: {status} — {detail}")
+    return {"id": check_id, "name": name, "status": status, "detail": detail}
+
+
+def _component_logs(
+    *,
+    blur: float,
+    darkness: float,
+    duplicate_ratio: float,
+    mean_ssim: float,
+    motion: dict[str, Any],
+    tracking: dict[str, Any],
+    semantic: float | None,
+    backend: str,
+    limits: dict[str, float],
+    frozen_reject: bool,
+    duplicate_reject: bool,
+) -> list[dict[str, Any]]:
+    flow_name = "DIS optical flow" if motion.get("backend") == "dis" else "Farneback optical flow"
+    yolo_status = "warning"
+    if tracking.get("detector") == "unavailable":
+        yolo_status = "failed"
+        yolo_detail = "YOLOv8n was not available on this run."
+    elif int(tracking.get("tracks") or 0) > 0:
+        yolo_status = "passed"
+        yolo_detail = (
+            f"{int(tracking.get('detections') or 0)} detection(s), "
+            f"{int(tracking.get('tracks') or 0)} track(s), "
+            f"preservation {float(tracking.get('preservation') or 0):.2f}."
+        )
+    else:
+        yolo_detail = "No recognizable object class. Recorded as a warning; the clip can still pass."
+    if semantic is None:
+        clip_status, clip_detail = "failed", f"OpenCLIP unavailable ({backend})."
+    elif semantic < limits["semantic"]:
+        clip_status = "failed"
+        clip_detail = f"similarity {semantic:.3f}, below {limits['semantic']:.2f}."
+    else:
+        clip_status = "passed"
+        clip_detail = f"similarity {semantic:.3f}, threshold {limits['semantic']:.2f}."
+    frozen = bool(motion.get("frozen"))
+    jump = float(motion.get("max_jump") or 0) > limits["discontinuity"]
+    if frozen_reject:
+        flow_status, ssim_status = "failed", "failed"
+    elif jump:
+        flow_status, ssim_status = "warning", "passed" if mean_ssim < limits["ssim_frozen"] else "warning"
+    else:
+        flow_status = "passed"
+        ssim_status = "passed"
+    return [
+        _component(
+            "blur",
+            "Laplacian blur",
+            "failed" if blur < limits["blur"] else "passed",
+            f"median variance {blur:.1f}, need ≥ {limits['blur']:.0f}.",
+        ),
+        _component(
+            "black",
+            "Black-frame ratio",
+            "failed" if darkness > 0.5 else "passed",
+            f"{darkness:.0%} of samples were near black, reject above 50%.",
+        ),
+        _component(
+            "phash",
+            "DCT perceptual hash",
+            "failed" if duplicate_reject else "passed",
+            f"{duplicate_ratio:.0%} neighbouring samples matched, reject above 80%.",
+        ),
+        _component(
+            "ssim",
+            "SSIM",
+            ssim_status,
+            f"mean {mean_ssim:.3f}; a frozen shot is rejected at ≥ {limits['ssim_frozen']:.3f} with low flow.",
+        ),
+        _component(
+            "flow",
+            flow_name,
+            flow_status,
+            f"mean motion {float(motion.get('mean_flow') or 0):.3f}, jump {float(motion.get('max_jump') or 0):.2f} "
+            f"(frozen below {limits['frozen_flow']:.2f}).",
+        ),
+        _component("yolo", "YOLOv8n", yolo_status, yolo_detail),
+        _component("clip", "OpenCLIP ViT-B-32", clip_status, clip_detail),
+    ]
 
 
 def evaluate(
@@ -394,6 +488,7 @@ def evaluate(
             "warnings": ["no frames"],
             "refinement": "Show a visible subject with motion and detail.",
             "metrics": {},
+            "components": [_component("frames", "Frame sampling", "failed", "No readable frames in the clip.")],
             "disclaimer": DISCLAIMER,
         }
     blur_values = [blur_score(frame) for frame in frames]
@@ -426,15 +521,19 @@ def evaluate(
         semantic, backend = None, "unavailable"
     warnings = list(degraded)
     reasons = []
+    mean_ssim = float(np.mean(similarities)) if similarities else 1.0
+    duplicate_ratio = (duplicates / comparisons) if comparisons else 0.0
+    frozen_reject = bool(motion["frozen"]) and mean_ssim >= limits["ssim_frozen"]
+    duplicate_reject = bool(comparisons) and duplicate_ratio > 0.8
     if darkness > 0.5:
         reasons.append("mostly blank or black")
     if blur < limits["blur"]:
         reasons.append("too blurry")
-    if motion["frozen"] and (not similarities or float(np.mean(similarities)) >= limits["ssim_frozen"]):
+    if frozen_reject:
         reasons.append("little or no motion")
-    if comparisons and duplicates / comparisons > 0.8:
+    if duplicate_reject:
         reasons.append("repeated frames")
-    if motion["max_jump"] > limits["discontinuity"]:
+    if float(motion["max_jump"]) > limits["discontinuity"]:
         warnings.append("motion jumps between samples")
     if semantic is not None and semantic < limits["semantic"]:
         reasons.append("weak match to the scene description")
@@ -447,23 +546,38 @@ def evaluate(
     )
     mapped = 0.0 if semantic is None else max(0.0, min(1.0, (float(semantic) + 1.0) / 2.0))
     quality = min(1.0, blur / 80.0) * (1 - darkness)
-    score = float(max(0.0, min(1.0, 0.45 * mapped + 0.25 * quality + 0.2 * min(1.0, motion["mean_flow"]) + 0.1 * tracking["preservation"])))
+    score = float(max(0.0, min(1.0, 0.45 * mapped + 0.25 * quality + 0.2 * min(1.0, float(motion["mean_flow"])) + 0.1 * tracking["preservation"])))
+    components = _component_logs(
+        blur=blur,
+        darkness=darkness,
+        duplicate_ratio=duplicate_ratio,
+        mean_ssim=mean_ssim,
+        motion=motion,
+        tracking=tracking,
+        semantic=semantic,
+        backend=backend,
+        limits=limits,
+        frozen_reject=frozen_reject,
+        duplicate_reject=duplicate_reject,
+    )
     report = {
         "accepted": not reasons,
         "score": score,
         "warnings": warnings + reasons,
         "refinement": refinement[:500],
         "disclaimer": DISCLAIMER,
+        "components": components,
         "metrics": {
             "blur": blur,
             "black_ratio": darkness,
-            "duplicate_ratio": (duplicates / comparisons) if comparisons else 0.0,
-            "mean_ssim": float(np.mean(similarities)) if similarities else 1.0,
+            "duplicate_ratio": duplicate_ratio,
+            "mean_ssim": mean_ssim,
             "semantic_similarity": semantic,
             "semantic_backend": backend,
             "semantic_threshold": limits["semantic"],
             "mean_flow": motion["mean_flow"],
             "motion_jump": motion["max_jump"],
+            "flow_backend": motion.get("backend"),
             "tracks": tracking["tracks"],
             "objects": tracking["detections"],
             "object_preservation": tracking["preservation"],
@@ -472,18 +586,10 @@ def evaluate(
         },
     }
     logger.info(
-        "cv semantic_backend=%s semantic=%s detector=%s objects=%s flow=%.3f blur=%.2f black=%.2f duplicate=%.2f ssim=%.3f score=%.3f accepted=%s reasons=%s",
-        backend,
-        "none" if semantic is None else f"{float(semantic):.3f}",
-        detector_name,
-        tracking["detections"],
-        motion["mean_flow"],
-        blur,
-        darkness,
-        report["metrics"]["duplicate_ratio"],
-        report["metrics"]["mean_ssim"],
-        score,
-        report["accepted"],
-        ",".join(reasons) or "-",
+        f"cv summary: accepted={report['accepted']} score={score:.3f} "
+        f"openclip={backend}:{('none' if semantic is None else f'{float(semantic):.3f}')} "
+        f"yolo={detector_name} objects={tracking['detections']} "
+        f"flow={float(motion['mean_flow']):.3f} blur={blur:.2f} black={darkness:.2f} "
+        f"duplicate={duplicate_ratio:.2f} ssim={mean_ssim:.3f} reasons={','.join(reasons) or '-'}"
     )
     return report

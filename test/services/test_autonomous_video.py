@@ -138,7 +138,14 @@ def test_rejected_scene_retries_once_then_stops(ready):
     def analyze(_path, _prompt):
         calls["n"] += 1
         if calls["n"] == 1:
-            return {"accepted": False, "score": 0.2, "warnings": ["weak match"], "refinement": "Show the boat closer.", "metrics": {}}
+            return {
+                "accepted": False,
+                "score": 0.2,
+                "warnings": ["weak match"],
+                "refinement": "Show the boat closer.",
+                "metrics": {},
+                "components": [{"id": "clip", "name": "OpenCLIP ViT-B-32", "status": "failed", "detail": "similarity 0.10, below 0.24."}],
+            }
         return {"accepted": True, "score": 0.9, "warnings": [], "refinement": "", "metrics": {}}
 
     paths = autonomous.generate_for_task(
@@ -155,6 +162,8 @@ def test_rejected_scene_retries_once_then_stops(ready):
     assert state.task["autonomous_terminal"] == "completed"
     assert state.task["autonomous_spent_usd"] == "0.20"
     assert "not a guarantee" in state.task["cv_report"]["disclaimer"]
+    assert state.task["scene_status"][0]["components"][0]["id"] == "clip"
+    assert state.task["scene_status"][0]["take"] == 0
 
 
 def test_saved_job_is_resumed_without_another_post(ready, tmp_path):
@@ -201,6 +210,7 @@ def test_rejected_takes_are_not_assembled(ready):
     assert state.task["autonomous_terminal"] == "failed"
     assert state.task["scene_status"][0]["status"] == "rejected"
     assert "weak match" in state.task["scene_status"][0]["warnings"]
+    assert state.task["scene_status"][0]["components"] == []
 
 
 def test_a_rejected_scene_is_retried_after_the_other_scenes(ready):

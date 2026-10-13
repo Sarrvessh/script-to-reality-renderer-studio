@@ -457,7 +457,7 @@ export function Settings() {
         <div className="group">
           <div className="row"><span>{t("Video Cache", "Downloaded clips")}</span><span className="meta">{cache || "Checking…"}</span></div>
           <div className="block">
-            <div className="actions">
+            <div className="actions pair">
               <button className="btn-quiet" type="button" disabled={busy} onClick={() => void clearCache(7)}>{t("Clean Old Cache", "Delete clips older than 7 days")}</button>
               <button className="btn-danger" type="button" disabled={busy} onClick={() => void clearCache(null)}>{t("Clean All Cache", "Delete all cached clips")}</button>
             </div>
@@ -470,13 +470,14 @@ export function Settings() {
         <div className="group">
           <div className="block stack">
             <p className="meta">The download contains the keys stored on this computer. Do not share that file.</p>
-            <div className="actions">
+            <div className="actions pair">
               <button className="btn-quiet" type="button" disabled={busy} onClick={() => void downloadKeys()}>{t("Export Keys", "Download keys")}</button>
               <label className="btn-quiet" htmlFor="key-file">
                 {t("Import Keys", "Restore keys")}
-                <input id="key-file" hidden type="file" accept="application/json" onChange={(event) => {
+                <input id="key-file" className="file-input" type="file" accept="application/json" onChange={(event) => {
                   const file = event.target.files?.[0];
                   if (file) void restoreKeys(file);
+                  event.target.value = "";
                 }} />
               </label>
             </div>
@@ -495,7 +496,7 @@ export function Settings() {
       {error ? <p className="notice notice-bad" role="alert">{error}</p> : null}
       {saved && !error ? <p className="notice" role="status">{saved}</p> : null}
       <div className="actions">
-        <button className="btn" type="submit" disabled={busy}>{busy ? "Saving…" : t("Save", "Save")}</button>
+        <button className="btn btn-block" type="submit" disabled={busy}>{busy ? "Saving…" : t("Save", "Save")}</button>
       </div>
     </form>
   );

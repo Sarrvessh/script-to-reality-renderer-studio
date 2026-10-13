@@ -372,7 +372,9 @@ def test_batch_candidate_autofill_once_preserves_manual_count(script):
 
 def test_reference_price_copy_does_not_promise_quote_is_final():
     for locale in ("zh", "en"):
-        messages = json.loads((MAIN.parent / "i18n" / f"{locale}.json").read_text())
+        messages = json.loads(
+            (MAIN.parent / "i18n" / f"{locale}.json").read_text(encoding="utf-8")
+        )
         # Price is only a selection hint, so it does not contradict the warning that an incomplete estimate may still be charged.
         text = messages["Translation"]["AI Video Model Reference Price"]
         assert ("实际模型调用" if locale == "zh" else "actual model usage") in text

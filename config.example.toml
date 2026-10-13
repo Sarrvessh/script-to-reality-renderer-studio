@@ -241,6 +241,22 @@ sonilo_timeout = 600
 # Registry defaults; only set them when you need an explicit override.
 llm_provider = "moonshot"
 
+# Optional sampling overrides for every text provider. Leave blank to use each provider's default.
+# llm_temperature = 0.7
+# llm_max_tokens = 2048
+
+# Optional script pacing. Used when a request does not pass target_duration_seconds.
+# Words per minute applies to space-separated languages; Chinese, Japanese, and Korean use characters per minute.
+# script_target_duration_seconds = 60
+# script_words_per_minute = 150
+
+# Optional factual grounding before script writing. Off when blank. "wikipedia" uses the free public API, no key.
+# Creative subjects (stories, poems) are skipped. Results are cached under storage/cache/research.
+# research_provider = ""
+# research_max_sources = 3
+# research_cache_hours = 24
+# research_timeout_seconds = 8
+
 # Kimi / Moonshot AI
 # API key: https://platform.kimi.com?track_id=track-6eec1e56a4494e52adcaebbcbbefce59&aff=script-to-reality
 moonshot_api_key = ""

@@ -82,7 +82,10 @@ class TestTaskStaticFiles(unittest.TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 403)
+        # The application has the two local Studio origins configured. Starlette's
+        # CORS middleware therefore handles this untrusted preflight and uses its
+        # standard 400 rejection (simple untrusted requests use the app's 403).
+        self.assertEqual(response.status_code, 400)
         self.assertNotIn("access-control-allow-origin", response.headers)
 
     def test_does_not_serve_symlink_to_file_outside_tasks(self):

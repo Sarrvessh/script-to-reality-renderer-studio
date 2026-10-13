@@ -196,7 +196,14 @@ export type RenderTask = {
   video_subject?: string;
   params?: Record<string, unknown>;
   autonomous_spent_usd?: string;
-  scene_status?: { index: number; status: string; score?: number; warnings?: string[] }[];
+  scene_status?: {
+    index: number;
+    take?: number;
+    status: string;
+    score?: number;
+    warnings?: string[];
+    components?: { id: string; name: string; status: string; detail: string }[];
+  }[];
   cv_report?: { spent_usd?: string; disclaimer?: string; terminal?: string };
 };
 

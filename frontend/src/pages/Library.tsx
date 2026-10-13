@@ -79,7 +79,7 @@ export function Library() {
     <>
       <h1 className="page-title">{t("Task Management", "Library")}</h1>
       <p className="lede">Click a project to open it. Everything else stays in the list.</p>
-      <div className="actions" style={{ marginBottom: "1rem" }}>
+      <div className="actions page-actions">
         <button className="btn-quiet" type="button" onClick={load} disabled={loading}>{loading ? "Checking…" : t("Refresh", "Refresh")}</button>
       </div>
       {error ? <p className="notice notice-bad" role="alert">{error}</p> : null}
@@ -112,7 +112,7 @@ export function Library() {
                   <div className="drop" role="region" aria-label={task.video_subject || "Task"}>
                     {task.error ? <p className="notice notice-bad">{task.error}</p> : null}
                     {video ? <video className="player" controls src={video} /> : null}
-                    <div className="actions">
+                    <div className="actions wrap">
                       <button className="btn" type="button" onClick={() => restore(task)}>{t("Load Task", "Load into Generate")}</button>
                       <button className="btn-quiet" type="button" onClick={() => {
                         readTaskLogs(task.task_id).then((data) => setLogs((data.lines || []).join("\n") || "No log for this task.")).catch((reason: Error) => setError(reason.message));

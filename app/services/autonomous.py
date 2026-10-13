@@ -6,7 +6,6 @@ the remaining project budget is not submitted.
 
 from __future__ import annotations
 
-import logging
 import math
 import os
 import threading
@@ -14,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from typing import Any, Callable
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 from app.models.schema import VideoConcatMode
 from app.services import cv_engine, openrouter_video, state as sm, storyboard
@@ -298,7 +297,20 @@ def _generate(task_id, params, video_script, audio_duration, subtitle_path="", *
         with cv_lock:
             playable = cv_engine.validate_playable(clip["path"])
             if not playable["playable"]:
-                report = {"accepted": False, "score": 0.0, "warnings": ["unreadable video"], "metrics": playable, "disclaimer": cv_engine.DISCLAIMER}
+                logger.info("cv Frame sampling: failed — The clip could not be read.")
+                report = {
+                    "accepted": False,
+                    "score": 0.0,
+                    "warnings": ["unreadable video"],
+                    "metrics": playable,
+                    "disclaimer": cv_engine.DISCLAIMER,
+                    "components": [{
+                        "id": "frames",
+                        "name": "Frame sampling",
+                        "status": "failed",
+                        "detail": "The clip could not be read.",
+                    }],
+                }
             else:
                 report = checker(clip["path"], prompt)
         report = dict(report)
@@ -347,6 +359,11 @@ def _generate(task_id, params, video_script, audio_duration, subtitle_path="", *
             output_path = cv_engine.apply_reframe(clip["path"], crops[0], reframed)
             if output_path != clip["path"]:
                 metrics["reframe_applied"] = True
+                logger.info(f"cv YOLOv8n: passed — crop applied on scene {index + 1} take {take}.")
+                for item in report.get("components") or []:
+                    if item.get("id") == "yolo":
+                        item["detail"] = f"{str(item.get('detail') or '').rstrip('.')} Crop applied."
+                        break
         return {"path": output_path, "score": float(report.get("score") or 0), "report": report, "refinement": report.get("refinement") or ""}
 
     def _latest_refinement(index: int) -> str:
@@ -387,9 +404,11 @@ def _generate(task_id, params, video_script, audio_duration, subtitle_path="", *
             }
         return {"index": index, "accepted": accepted_take}
 
+    from app.utils import logging_utils
+
     workers = min(4, max(1, len(scenes)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        first_pass = list(pool.map(_generate_scene, scenes))
+        first_pass = list(pool.map(logging_utils.bind_log_scope(_generate_scene), scenes))
     deferred = []
     for result in first_pass:
         if result.get("accepted") is not None and "index" in result and "deferred" not in result:
@@ -447,9 +466,11 @@ def _statuses(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for report in reports:
         rows.append({
             "index": report.get("scene"),
+            "take": report.get("take"),
             "status": "accepted" if report.get("accepted") else "rejected",
             "score": report.get("score"),
             "warnings": list(report.get("warnings") or [])[:4],
+            "components": list(report.get("components") or []),
         })
     return rows
 

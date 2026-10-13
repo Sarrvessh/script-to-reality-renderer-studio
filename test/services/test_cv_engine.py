@@ -25,6 +25,15 @@ def test_motion_tracking_and_acceptance_on_a_moving_subject():
     assert report["metrics"]["object_preservation"] >= 0
     assert report["accepted"]
     assert "not a guarantee" in report["disclaimer"]
+    ids = [row["id"] for row in report["components"]]
+    assert ids == ["blur", "black", "phash", "ssim", "flow", "yolo", "clip"]
+    by_id = {row["id"]: row for row in report["components"]}
+    assert by_id["blur"]["status"] == "passed"
+    assert by_id["black"]["status"] == "passed"
+    assert by_id["yolo"]["status"] == "passed"
+    assert by_id["clip"]["status"] == "passed"
+    assert "YOLOv8n" in by_id["yolo"]["name"]
+    assert "OpenCLIP" in by_id["clip"]["name"]
 
 
 def test_black_blur_and_duplicate_frames_are_rejected():
@@ -32,6 +41,9 @@ def test_black_blur_and_duplicate_frames_are_rejected():
     blank = cv_engine.evaluate(black, "a sunny harbor", embed=lambda _frame, _text: 0.9, detect=lambda _frame: [])
     assert not blank["accepted"]
     assert blank["metrics"]["black_ratio"] == 1
+    blank_by_id = {row["id"]: row for row in blank["components"]}
+    assert blank_by_id["black"]["status"] == "failed"
+    assert blank_by_id["clip"]["status"] == "passed"
 
     import cv2
     sharp = np.zeros((48, 64, 3), dtype=np.uint8)
@@ -83,3 +95,10 @@ def test_yolo_parser_and_playable_clip(tmp_path):
     assert check["width"] == 64
     empty = cv_engine.validate_playable(str(tmp_path / "missing.avi"))
     assert not empty["playable"]
+
+
+def test_empty_frames_log_frame_sampling_failure():
+    report = cv_engine.evaluate([], "a bright square")
+    assert not report["accepted"]
+    assert report["components"][0]["id"] == "frames"
+    assert report["components"][0]["status"] == "failed"

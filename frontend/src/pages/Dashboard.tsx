@@ -24,15 +24,137 @@ const sourceLabels: Record<string, string> = {
   openrouter: "OpenRouter video",
 };
 
-const sceneChecks: [string, string][] = [
-  ["OpenCLIP ViT-B-32", "Compares a frame with the scene prompt"],
-  ["YOLOv8n", "Finds objects and sets the crop"],
-  ["DIS optical flow", "Rejects a frozen shot"],
-  ["Laplacian blur", "Rejects a soft frame"],
-  ["Black-frame ratio", "Rejects a blank frame"],
-  ["DCT perceptual hash", "Rejects a repeated frame"],
-  ["SSIM", "Rejects a shot that barely changes"],
+type SceneCheck = {
+  id: string;
+  name: string;
+  short: string;
+  where: string;
+  how: string;
+  result: string;
+  fail: string;
+  cue: string[];
+};
+
+const sceneChecks: SceneCheck[] = [
+  {
+    id: "blur",
+    short: "Blur",
+    name: "Laplacian blur",
+    where: "On every sampled frame, before the clip can be kept.",
+    how: "Measures sharpness as the variance of the Laplacian. The median of the samples is used.",
+    result: "Rejects a soft frame",
+    fail: "The clip is rejected and tried again after the other scenes finish.",
+    cue: ["too blurry"],
+  },
+  {
+    id: "black",
+    short: "Black",
+    name: "Black-frame ratio",
+    where: "On every sampled frame, with the blur check.",
+    how: "Counts frames whose mean brightness is near black.",
+    result: "Rejects a blank frame",
+    fail: "The clip is rejected and tried again after the other scenes finish.",
+    cue: ["mostly blank", "blank or black"],
+  },
+  {
+    id: "phash",
+    short: "pHash",
+    name: "DCT perceptual hash",
+    where: "Between consecutive sampled frames.",
+    how: "Builds an 8×8 DCT hash of each sample and compares neighbours.",
+    result: "Rejects a repeated frame",
+    fail: "The clip is rejected and tried again after the other scenes finish.",
+    cue: ["repeated frames"],
+  },
+  {
+    id: "ssim",
+    short: "SSIM",
+    name: "SSIM",
+    where: "Between consecutive sampled frames, with optical flow.",
+    how: "Measures how similar neighbouring samples are. This is a structural score, not a neural model.",
+    result: "Rejects a frozen shot, with optical flow",
+    fail: "Low motion and a high SSIM together reject the clip.",
+    cue: ["little or no motion"],
+  },
+  {
+    id: "flow",
+    short: "Flow",
+    name: "DIS optical flow",
+    where: "Between consecutive sampled frames.",
+    how: "Estimates motion. DIS is used when OpenCV provides it; otherwise Farneback.",
+    result: "Rejects a frozen shot, with SSIM",
+    fail: "Little motion, confirmed by a high SSIM, rejects the clip. A sudden jump is recorded as a warning.",
+    cue: ["little or no motion", "motion jumps"],
+  },
+  {
+    id: "yolo",
+    short: "YOLO",
+    name: "YOLOv8n",
+    where: "On the sampled frames, then on the kept clip.",
+    how: "Finds objects and tracks the main subject. A missing class is a warning, not an automatic reject.",
+    result: "Sets the crop on a kept clip",
+    fail: "The warning is listed on the scene. Cropping runs only after the clip is accepted.",
+    cue: ["no recognizable object"],
+  },
+  {
+    id: "clip",
+    short: "CLIP",
+    name: "OpenCLIP ViT-B-32",
+    where: "On the middle sampled frame, against this scene’s prompt.",
+    how: "Encodes the frame and the prompt, then compares them. The match score on a finished scene comes from this model.",
+    result: "Rejects a weak match to the prompt",
+    fail: "A similarity below the threshold (default 0.24) rejects the clip. It is tried again after the other scenes finish.",
+    cue: ["weak match"],
+  },
 ];
+
+type SceneComponent = { id: string; name: string; status: string; detail: string };
+
+function checksFromWarnings(warnings: string[] | undefined) {
+  const text = (warnings || []).join(" ").toLowerCase();
+  return sceneChecks.filter((check) => check.cue.some((cue) => text.includes(cue)));
+}
+
+function cvMessage(line: string) {
+  const at = line.lastIndexOf(" - ");
+  const body = at >= 0 ? line.slice(at + 3) : line;
+  return body.trim();
+}
+
+function cvLinesFrom(logs: string[]) {
+  return logs.map(cvMessage).filter((line) => line.startsWith("cv "));
+}
+
+function checkShort(id: string, name: string) {
+  return sceneChecks.find((check) => check.id === id)?.short || name;
+}
+
+function componentsForScene(scene: { warnings?: string[]; components?: SceneComponent[] }): SceneComponent[] {
+  if (scene.components?.length) return scene.components;
+  const hits = new Set(checksFromWarnings(scene.warnings).map((check) => check.id));
+  return sceneChecks.map((check) => ({
+    id: check.id,
+    name: check.name,
+    status: hits.has(check.id) ? "failed" : "passed",
+    detail: hits.has(check.id) ? (scene.warnings || []).join("; ") : "",
+  }));
+}
+
+function CheckRun({ components }: { components?: SceneComponent[] }) {
+  const byId = Object.fromEntries((components || []).map((item) => [item.id, item]));
+  return (
+    <span className="check-run">
+      {sceneChecks.map((check) => {
+        const row = byId[check.id];
+        const status = row?.status || "waiting";
+        const label = [check.name, status, row?.detail].filter(Boolean).join(" — ");
+        return (
+          <span key={check.id} data-status={status} title={label} aria-label={label}>{check.short}</span>
+        );
+      })}
+    </span>
+  );
+}
 
 function stageIndex(progress: number) {
   if (progress < 15) return 0;
@@ -42,11 +164,96 @@ function stageIndex(progress: number) {
   return 4;
 }
 
-function sceneLine(scene: { index: number; status: string; score?: number; warnings?: string[] }) {
+function SceneResult({ scene }: { scene: NonNullable<RenderTask["scene_status"]>[number] }) {
   const decision = scene.status === "accepted" ? "accepted" : "rejected";
-  const score = typeof scene.score === "number" ? ` Match score ${scene.score.toFixed(2)}.` : "";
-  const why = scene.warnings?.length ? ` ${scene.warnings.join("; ")}.` : "";
-  return `Scene ${Number(scene.index) + 1} ${decision}.${score}${why}`;
+  const rows = componentsForScene(scene);
+  const issues = rows.filter((row) => row.status !== "passed");
+  const measured = rows.filter((row) => row.detail);
+  return (
+    <li className={`scene-result${scene.status === "rejected" ? " is-rejected" : ""}`}>
+      <div className="scene-head">
+        <strong>
+          Scene {Number(scene.index) + 1}
+          {typeof scene.take === "number" ? ` take ${scene.take + 1}` : ""} {decision}
+        </strong>
+        {typeof scene.score === "number" ? <span className="meta" title="OpenCLIP match">{scene.score.toFixed(2)}</span> : null}
+      </div>
+      <CheckRun components={rows} />
+      {issues.length ? (
+        <ul className="cv-issues">
+          {issues.map((row) => (
+            <li key={row.id} data-status={row.status}>
+              <strong>{checkShort(row.id, row.name)}</strong>
+              {row.detail ? ` ${row.detail}` : ` ${row.status}`}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {measured.length ? (
+        <details className="cv-more">
+          <summary>Measurements</summary>
+          <dl>
+            {measured.map((row) => (
+              <div key={row.id}>
+                <dt>{row.name}</dt>
+                <dd>{row.detail}</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      ) : null}
+    </li>
+  );
+}
+
+function KeywordActivity() {
+  return (
+    <div className="compose" role="status">
+      <div className="compose-lines compose-phrases" aria-hidden="true"><span /><span /><span /><span /></div>
+      <p className="meta">Reading the narration and writing visual search phrases. They appear in the field when they are ready.</p>
+    </div>
+  );
+}
+
+function renderStageNotes(openrouter: boolean) {
+  return [
+    "The spoken script is being prepared for this video.",
+    "The voice track is being recorded from the narration.",
+    "Caption times are being aligned to the speech.",
+    openrouter
+      ? "Each clip is generated and checked before it is kept."
+      : "Footage is being cut to match the spoken lines.",
+    "Accepted clips are being assembled into the finished video.",
+  ];
+}
+
+function StagePicture({ stage, wide }: { stage: number; wide: boolean }) {
+  return (
+    <div className={`gate-frame${wide ? " wide" : ""}`} data-stage={stage} aria-hidden="true">
+      {stage === 0 ? (
+        <div className="stage-script"><span /><span /><span /><span /></div>
+      ) : null}
+      {stage === 1 ? (
+        <div className="stage-voice">
+          {Array.from({ length: 9 }, (_, index) => <span key={index} />)}
+        </div>
+      ) : null}
+      {stage === 2 ? (
+        <div className="stage-captions"><span /><span /><span /></div>
+      ) : null}
+      {stage === 3 ? (
+        <>
+          <span className="gate-scene gate-scene-one" />
+          <span className="gate-scene gate-scene-two" />
+          <span className="gate-scene gate-scene-three" />
+          <span className="gate-scan" />
+        </>
+      ) : null}
+      {stage === 4 ? (
+        <div className="stage-master"><span /><span /><span /></div>
+      ) : null}
+    </div>
+  );
 }
 
 const sourceGroups: { label: string; ids: string[] }[] = [
@@ -343,7 +550,10 @@ export function Dashboard() {
   }, [draft?.subtitle_enabled, draft?.font_name, draft?.text_fore_color, draft?.stroke_color, draft?.text_background_color, draft?.use_caption_bar, draft?.video_script, draft?.video_subject]);
 
   useEffect(() => {
-    if (!task || settings?.hide_log) return;
+    if (!task) return;
+    const wantRaw = !settings?.hide_log;
+    const wantCv = draft?.video_source === "openrouter";
+    if (!wantRaw && !wantCv) return;
     let stop = false;
     const timer = window.setTimeout(() => {
       readTaskLogs(task.task_id)
@@ -356,7 +566,7 @@ export function Dashboard() {
       stop = true;
       window.clearTimeout(timer);
     };
-  }, [task, logs, settings?.hide_log]);
+  }, [task, logs, settings?.hide_log, draft?.video_source]);
 
   useEffect(() => {
     if (!task || task.state !== 1 || !settings?.open_task_folder_on_completion || opened === task.task_id) return;
@@ -433,7 +643,7 @@ export function Dashboard() {
       setError("Write a script before generating keywords.");
       return;
     }
-    setBusy("Finding keywords…");
+    setBusy("Writing the keywords…");
     setError("");
     try {
       const result = await writeTerms({
@@ -821,7 +1031,15 @@ export function Dashboard() {
   }
 
   const writingScript = busy.startsWith("Writing the script") || busy.startsWith("Starting the paid script");
+  const findingTerms = busy.startsWith("Writing the keywords") || busy.startsWith("Finding keywords");
   const video = task?.videos?.find((item) => item.endsWith(".mp4")) ?? "";
+  const renderStages = draft.video_source === "openrouter"
+    ? ["Preparing the narration", "Recording the voice", "Timing the captions", "Generating clips and checking each scene", "Rendering the master"]
+    : ["Preparing the narration", "Recording the voice", "Timing the captions", "Cutting the footage", "Rendering the master"];
+  const activeRenderStage = stageIndex(task?.progress || 0);
+  const stageNotes = renderStageNotes(draft.video_source === "openrouter");
+  const cvLines = cvLinesFrom(logs);
+  const latestCv = task?.scene_status?.length ? task.scene_status[task.scene_status.length - 1].components : undefined;
   const clipChoices = draft.video_source === "metaso_minimax" || draft.video_source === "muapi"
     ? [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     : [2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -831,7 +1049,7 @@ export function Dashboard() {
       <h1 className="page-title">Generate</h1>
       <p className="lede">Name the subject, write or generate the narration, then render. Generated scenes are checked before a rejected clip can be assembled.</p>
       {error ? <p className="notice notice-bad" role="alert">{error}</p> : null}
-      {busy && !writingScript ? <p className="meta" role="status">{busy}</p> : null}
+      {busy && !writingScript && !findingTerms ? <p className="meta global-status" role="status">{busy}</p> : null}
 
       <section className="section">
         <h2>Video Script</h2>
@@ -867,7 +1085,7 @@ export function Dashboard() {
                 <label htmlFor="system">{t("Custom System Prompt", "Custom system prompt")}</label>
                 <textarea id="system" className="area" value={draft.custom_system_prompt} onChange={(event) => patch({ custom_system_prompt: event.target.value })} />
               </div>
-              <div className="actions">
+              <div className="actions pair">
                 <button className="btn-quiet" type="button" onClick={() => patch({ custom_system_prompt: catalog?.default_system_prompt || "" })}>{t("Restore Default System Prompt", "Restore default prompt")}</button>
                 <button className="btn-quiet" type="button" disabled={Boolean(busy)} onClick={() => void showPrompt()}>{t("Preview Final Prompt", "Preview prompt")}</button>
               </div>
@@ -928,7 +1146,8 @@ export function Dashboard() {
           </div>
           <div className="block">
             <label htmlFor="terms">Video keywords</label>
-            <textarea id="terms" className="area" value={draft.video_terms} onChange={(event) => patch({ video_terms: event.target.value })} />
+            {findingTerms ? <KeywordActivity /> : null}
+            <textarea id="terms" className="area" aria-busy={findingTerms} value={draft.video_terms} onChange={(event) => patch({ video_terms: event.target.value })} />
           </div>
         </div>
         <p className="section-foot">Keywords are separated by commas. Leave them empty and the render will create them from the script.</p>
@@ -1332,24 +1551,43 @@ export function Dashboard() {
       <section className="section" id="scene-checks">
         <h2>Scene checks</h2>
         <div className="group">
-          {sceneChecks.map(([name, job]) => (
-            <div className="row" key={name}>
-              <span>{name}</span>
-              <span className="meta">{job}</span>
-            </div>
+          <div className="block">
+            <p className="lede-inline">
+              {draft.video_source === "openrouter"
+                ? "Each OpenRouter clip is sampled, checked, then kept or left out before the master is assembled. The order below is the order they run."
+                : "These checks run only when Video source is OpenRouter video. Stock footage is not scored."}
+            </p>
+            <ol className="check-order" aria-label="Check order">
+              {sceneChecks.map((check, index) => (
+                <li key={check.id}><span>{index + 1}</span>{check.name}</li>
+              ))}
+            </ol>
+          </div>
+          {sceneChecks.map((check) => (
+            <details className="source check-detail" key={check.id}>
+              <summary>
+                <span>{check.name}</span>
+                <span className="meta">{check.result}</span>
+              </summary>
+              <div className="check-body">
+                <p><strong>Where</strong> {check.where}</p>
+                <p><strong>How</strong> {check.how}</p>
+                <p><strong>If it fails</strong> {check.fail}</p>
+              </div>
+            </details>
           ))}
         </div>
-        <p className="section-foot">These checks run on each generated scene. Motion uses DIS optical flow, or Farneback when DIS is unavailable. Stock footage is not scored. A score is a measurement from the named model, not a guarantee that the scene is correct.</p>
+        <p className="section-foot">A match score is the OpenCLIP measurement. Laplacian, black-frame, pHash, SSIM, and optical flow are frame measurements, not neural models. They are not a guarantee that the scene is correct.</p>
       </section>
 
-      <section className="section">
+      <section className="section" id="generate">
         <h2>Generate</h2>
         <div className="group">
           <div className="block stack">
             <button className="btn btn-block" type="button" disabled={Boolean(busy) || task?.state === 4} onClick={() => void generate()}>
               {task?.state === 4 ? "Generating…" : t("Generate Video", "Generate video")}
             </button>
-            <div className="actions">
+            <div className="actions trio">
               <button className="btn-quiet" type="button" disabled={Boolean(busy)} onClick={() => void generatePart("audio")}>{t("Generate Audio", "Audio only")}</button>
               <button className="btn-quiet" type="button" disabled={Boolean(busy)} onClick={() => void generatePart("subtitle")}>{t("Generate Subtitle", "Subtitles only")}</button>
               <button className="btn-quiet" type="button" disabled={Boolean(busy)} onClick={() => void socialCopy()}>{t("Generate Social Metadata", "Write a post")}</button>
@@ -1358,15 +1596,22 @@ export function Dashboard() {
               <label htmlFor="threads">{t("Threads", "Encoder threads")}</label>
               <input id="threads" className="field" type="number" min="1" max="16" value={draft.n_threads} onChange={(event) => patch({ n_threads: Number(event.target.value) })} />
             </div>
-            <div className="actions">
-              <button className="btn-quiet" type="button" onClick={exportPreset}>{t("Export Settings", "Export settings")}</button>
-              <label className="btn-quiet" htmlFor="preset">
-                {t("Import Settings", "Import settings")}
-                <input id="preset" hidden type="file" accept="application/json" onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) void importPreset(file);
-                }} />
-              </label>
+            <div className="preset-tools">
+              <div className="preset-copy">
+                <strong>Settings preset</strong>
+                <p className="meta">Move these generation settings between projects.</p>
+              </div>
+              <div className="actions pair">
+                <button className="btn-quiet" type="button" onClick={exportPreset}>{t("Export Settings", "Export settings")}</button>
+                <label className="btn-quiet" htmlFor="preset">
+                  {t("Import Settings", "Import settings")}
+                  <input id="preset" className="file-input" type="file" accept="application/json" onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void importPreset(file);
+                    event.target.value = "";
+                  }} />
+                </label>
+              </div>
             </div>
           </div>
           {notice ? <p className="notice" role="status">{notice}</p> : null}
@@ -1375,17 +1620,35 @@ export function Dashboard() {
             <div className="block stack">
               {task.state === 4 ? (
                 <div className="gate">
-                  <div className={`gate-frame${draft.aspect === "16:9" ? " wide" : ""}`} aria-hidden="true">
-                    <span className="gate-scan" />
+                  <div className="render-head">
+                    <div>
+                      <strong>Building your video</strong>
+                      <span>{renderStages[activeRenderStage]}</span>
+                    </div>
+                    <span className="render-percent">{task.progress}%</span>
                   </div>
-                  <ol className="gate-steps">
-                    {(draft.video_source === "openrouter"
-                      ? ["Preparing the narration", "Recording the voice", "Timing the captions", "Generating clips and checking each scene", "Rendering the master"]
-                      : ["Preparing the narration", "Recording the voice", "Timing the captions", "Cutting the footage", "Rendering the master"]
-                    ).map((label, index) => (
-                      <li key={label} aria-current={index === stageIndex(task.progress) ? "step" : undefined}>{label}</li>
-                    ))}
-                  </ol>
+                  <div className="render-work">
+                    <StagePicture stage={activeRenderStage} wide={draft.aspect === "16:9"} />
+                    <ol className="gate-steps">
+                      {renderStages.map((label, index) => {
+                        const state = index < activeRenderStage ? "done" : index === activeRenderStage ? "active" : "waiting";
+                        return (
+                          <li key={label} data-state={state} aria-current={state === "active" ? "step" : undefined}>
+                            <span className="stage-marker" aria-hidden="true" />
+                            <span>
+                              {label}
+                              {state === "active" ? (
+                                <>
+                                  <em>{stageNotes[index]}</em>
+                                  {index === 3 ? <CheckRun components={latestCv} /> : null}
+                                </>
+                              ) : null}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  </div>
                 </div>
               ) : null}
               <progress className="meter" max={100} value={task.progress} aria-label="Render progress" />
@@ -1398,9 +1661,26 @@ export function Dashboard() {
               {task.scene_status?.length ? (
                 <ul className="scene-list">
                   {task.scene_status.map((scene) => (
-                    <li className="meta" key={`${scene.index}-${scene.status}-${scene.score ?? "none"}`}>{sceneLine(scene)}</li>
+                    <SceneResult key={`${scene.index}-${scene.take ?? scene.status}-${scene.score ?? "none"}-${scene.components?.length ?? 0}`} scene={scene} />
                   ))}
                 </ul>
+              ) : task.state === 4 && draft.video_source === "openrouter" && activeRenderStage === 3 ? (
+                <ul className="scene-list">
+                  <li className="scene-result">
+                    <div className="scene-head"><strong>Checking clips</strong></div>
+                    <CheckRun />
+                  </li>
+                </ul>
+              ) : null}
+              {cvLines.length ? (
+                <details className="cv-feed" open={task.state === 4}>
+                  <summary>Scene check log <span className="meta">{cvLines.length}</span></summary>
+                  <ol>
+                    {cvLines.slice(-48).map((line, index) => (
+                      <li key={`${index}-${line}`}>{line}</li>
+                    ))}
+                  </ol>
+                </details>
               ) : null}
               {video ? (
                 <>

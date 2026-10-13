@@ -212,14 +212,11 @@ class TestScriptPromptOptions(unittest.TestCase):
         ):
             result = llm.generate_script(video_subject="savings tips", language="en-US")
 
-        # Each bracket / paren group should be gone, but the surrounding words
-        # must survive.
+        # Square-bracket stage notes go; meaningful parentheses stay.
         self.assertNotIn("[", result)
         self.assertNotIn("]", result)
-        self.assertNotIn("(", result)
-        self.assertNotIn(")", result)
         self.assertIn("A beautiful day at the", result)
-        self.assertIn("10% of your income", result)
+        self.assertIn("Save (at least) 10% of your income (monthly).", result)
 
     def test_generate_terms_can_request_script_ordered_keywords(self):
         """
@@ -280,6 +277,7 @@ class TestScriptPromptOptions(unittest.TestCase):
             result = llm.generate_terms(
                 video_subject="Coffee",
                 video_script="How to brew coffee.",
+                amount=2,
             )
 
         self.assertEqual(result, ["coffee beans", "barista tools"])
@@ -969,7 +967,7 @@ class TestLiteLLMProvider(unittest.TestCase):
         )
         self.assertEqual(captured["model"], "gemini-test-model")
         self.assertEqual(captured["contents"], "Say hello")
-        self.assertEqual(captured["config"].max_output_tokens, 2048)
+        self.assertEqual(captured["config"].max_output_tokens, 8192)
         self.assertTrue(captured["closed"])
 
     def test_cloudflare_requires_account_id_before_request(self):
@@ -2479,7 +2477,9 @@ class TestSocialMetadata(unittest.TestCase):
         self.assertEqual(result["title"], "Coffee tips")
         self.assertEqual(result["caption"], "Save these three coffee tips.")
         self.assertEqual(len(result["hashtags"]), 8)
-        self.assertEqual(result["hashtags"][0], "#shorts")
+        self.assertEqual(result["hashtags"][:2], ["#CoffeeTips", "#Coffee"])
+        for bait in ("#viral", "#fyp", "#trending"):
+            self.assertNotIn(bait, result["hashtags"])
 
     def test_request_model_defaults_to_auto_language_tiktok(self):
         body = VideoSocialMetadataRequest(video_subject="Test")

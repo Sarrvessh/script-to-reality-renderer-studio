@@ -161,6 +161,9 @@ class VideoParams(BaseModel):
     paragraph_number: int = Field(default=1, ge=1, le=10)
     video_script_prompt: str = Field(default="", max_length=2000)
     custom_system_prompt: str = Field(default="", max_length=8000)
+    target_duration_seconds: Optional[float] = Field(
+        default=None, ge=5, le=1800, allow_inf_nan=False
+    )
     openrouter_video_model: str = Field(default="", max_length=120)
     openrouter_video_resolution: str = Field(default="480p", max_length=12)
     openrouter_video_duration: int = Field(default=5, ge=1, le=60)
@@ -229,6 +232,9 @@ class VideoScriptParams:
     paragraph_number: int = Field(default=1, ge=1, le=10)
     video_script_prompt: str = Field(default="", max_length=2000)
     custom_system_prompt: str = Field(default="", max_length=8000)
+    target_duration_seconds: Optional[float] = Field(
+        default=None, ge=5, le=1800, allow_inf_nan=False
+    )
 
 
 class VideoTermsParams:
