@@ -1,5 +1,7 @@
 """Autonomous scene generation with a mocked OpenRouter video API. No live charges."""
 
+import threading
+
 import pytest
 
 from app.services import autonomous, openrouter_video
@@ -10,9 +12,11 @@ class _Jobs:
     def __init__(self):
         self.calls = []
         self._n = 0
+        self._lock = threading.Lock()
 
     def get(self, url, headers=None, timeout=None):
-        self.calls.append(("GET", url))
+        with self._lock:
+            self.calls.append(("GET", url))
         if url.endswith("/videos/models"):
             return _Response(200, {"data": [HEYGEN]})
         if url.endswith("/content?index=0"):
@@ -21,9 +25,10 @@ class _Jobs:
         return _Response(200, {"id": job_id, "status": "completed"})
 
     def post(self, url, headers=None, json=None, timeout=None):
-        self._n += 1
-        job_id = f"job-{self._n}"
-        self.calls.append(("POST", url, json, job_id))
+        with self._lock:
+            self._n += 1
+            job_id = f"job-{self._n}"
+            self.calls.append(("POST", url, json, job_id))
         return _Response(202, {"id": job_id, "status": "pending"})
 
 
@@ -208,12 +213,15 @@ def test_a_rejected_scene_is_retried_after_the_other_scenes(ready):
         "script": "A paper boat drifts.",
         "source": "script",
     }
-    calls = {"n": 0}
+    pond = {"n": 0}
 
-    def analyze(_path, _prompt):
-        calls["n"] += 1
-        if calls["n"] in (1, 2):
-            return {"accepted": False, "score": 0.2, "warnings": ["weak match"], "refinement": "Show the boat closer.", "metrics": {}}
+    def analyze(_path, prompt):
+        if "beside reeds" in prompt:
+            return {"accepted": True, "score": 0.9, "warnings": [], "refinement": "", "metrics": {}}
+        if prompt.startswith("A paper boat on a pond"):
+            pond["n"] += 1
+            if pond["n"] <= 2:
+                return {"accepted": False, "score": 0.2, "warnings": ["weak match"], "refinement": "Show the boat closer.", "metrics": {}}
         return {"accepted": True, "score": 0.9, "warnings": [], "refinement": "", "metrics": {}}
 
     paths = autonomous.generate_for_task(
@@ -227,12 +235,52 @@ def test_a_rejected_scene_is_retried_after_the_other_scenes(ready):
     posts = [call for call in session.calls if call[0] == "POST"]
     prompts = [call[2]["prompt"] for call in posts]
     assert len(posts) == 4
-    assert prompts[2].startswith("A paper boat beside reeds")
-    assert prompts[3].startswith("A paper boat on a pond")
+    assert any(prompt.startswith("A paper boat beside reeds") for prompt in prompts)
+    assert sum(prompt.startswith("A paper boat on a pond") for prompt in prompts) == 3
     assert len(paths) == 2
     assert "scene-0-take-2.mp4" in paths[0].replace("\\", "/")
     assert "scene-1-take-0.mp4" in paths[1].replace("\\", "/")
     assert state.task["autonomous_terminal"] == "completed"
+
+
+def test_subtitle_time_selects_the_clip_prompt(ready, tmp_path):
+    session, state = ready
+    srt = tmp_path / "subtitle.srt"
+    srt.write_text(
+        "1\n00:00:00,000 --> 00:00:05,000\nMercury is the closest planet.\n\n"
+        "2\n00:00:05,000 --> 00:00:10,000\nNeptune is the farthest planet.\n",
+        encoding="utf-8",
+    )
+
+    def complete(prompt):
+        if "visual_prompt" not in prompt:
+            return "{}"
+        return (
+            '{"scenes":['
+            '{"index":0,"visual_prompt":"Mercury, a small grey planet."},'
+            '{"index":1,"visual_prompt":"Neptune, a deep blue ice giant."},'
+            '{"index":2,"visual_prompt":"Neptune remains in frame."}'
+            "]}"
+        )
+
+    autonomous.generate_for_task(
+        "task-1",
+        _params(project_budget_usd=1, max_scene_retries=0, visual_style=""),
+        audio_duration=10,
+        subtitle_path=str(srt),
+        session=session,
+        sleep=lambda _seconds: None,
+        clock=lambda: 0,
+        analyze=_accept,
+        complete=complete,
+    )
+    prompts = [call[2]["prompt"] for call in session.calls if call[0] == "POST"]
+    neptune = next(prompt for prompt in prompts if prompt.startswith("Neptune, a deep blue"))
+    assert len(prompts) == 3
+    assert any(prompt.startswith("Mercury") for prompt in prompts)
+    assert "Mercury" not in neptune
+    assert all("New camera angle" not in prompt for prompt in prompts)
+    assert state.task["storyboard"]["source"] == "timeline"
 
 
 def test_narration_coverage_fails_before_any_submission_when_the_budget_is_short(ready):

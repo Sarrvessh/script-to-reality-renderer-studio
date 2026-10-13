@@ -662,11 +662,15 @@ def concat_video_clips_with_ffmpeg(
             codec,
             "-threads",
             str(threads or 2),
+        ]
+        if codec == "libx264":
+            command.extend(["-preset", "veryfast"])
+        command.extend([
             "-vf",
             _BT709_VIDEO_FILTER,
             "-pix_fmt",
             "yuv420p",
-        ]
+        ])
         if max_duration is not None and max_duration > 0:
             command.extend(["-t", f"{max_duration:.3f}"])
         command.append(staged_output)

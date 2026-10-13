@@ -721,6 +721,7 @@ def get_video_materials(
     video_terms,
     audio_duration,
     loomloom_video_request: loomloom.LoomLoomConfirmedVideoRequest | None = None,
+    subtitle_path: str = "",
 ):
     if params.video_source == "local":
         logger.info("\n\n## preprocess local materials")
@@ -801,7 +802,9 @@ def get_video_materials(
         logger.info("\n\n## generating original scenes with OpenRouter")
         try:
             from app.services import autonomous
-            return autonomous.generate_for_task(task_id, params, audio_duration=audio_duration)
+            return autonomous.generate_for_task(
+                task_id, params, audio_duration=audio_duration, subtitle_path=subtitle_path,
+            )
         except openrouter_video.OpenRouterVideoError as exc:
             remote_job_id = str(getattr(exc, "job_id", "") or "").strip()
             details = {"openrouter_video_job_id": remote_job_id} if remote_job_id else None
@@ -1690,15 +1693,6 @@ def _run_pipeline(
 
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=10)
 
-    if params.video_source == "openrouter" and stop_at in {"materials", "video"}:
-        try:
-            from app.services import autonomous
-            board = autonomous.prepare_storyboard(task_id, params, video_script)
-        except openrouter_video.OpenRouterVideoError as exc:
-            return _mark_task_failed(task_id, "script", str(exc))
-        if board.get("script"):
-            video_script = board["script"]
-
     if stop_at == "script":
         sm.state.update_task(
             task_id, state=const.TASK_STATE_COMPLETE, progress=100, script=video_script
@@ -1809,6 +1803,7 @@ def _run_pipeline(
         video_terms,
         audio_duration,
         loomloom_video_request=loomloom_video_request,
+        subtitle_path=subtitle_path,
     )
     if not downloaded_videos:
         return _mark_task_failed(

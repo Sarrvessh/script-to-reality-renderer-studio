@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import re
 from typing import Any, Callable
 
@@ -83,6 +85,128 @@ def parse_storyboard(raw: str, style: str, duration: int, count: int) -> list[di
             "duration": seconds if seconds > 0 else duration,
         })
     return scenes or None
+
+
+_SRT_STAMP = re.compile(r"(\d+):(\d+):(\d+)[,.](\d+)")
+
+
+def _stamp_seconds(stamp: str) -> float:
+    match = _SRT_STAMP.search(stamp)
+    if not match:
+        return 0.0
+    hours, minutes, seconds, fraction = match.groups()
+    millis = int(fraction[:3].ljust(3, "0"))
+    return int(hours) * 3600 + int(minutes) * 60 + int(seconds) + millis / 1000
+
+
+def parse_srt(text: str) -> list[tuple[float, float, str]]:
+    cues = []
+    for block in re.split(r"\n\s*\n", str(text or "").strip()):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        timing = next((line for line in lines if "-->" in line), "")
+        if not timing:
+            continue
+        left, right = timing.split("-->", 1)
+        spoken = " ".join(lines[lines.index(timing) + 1 :]).strip()
+        if spoken:
+            cues.append((_stamp_seconds(left), _stamp_seconds(right), spoken))
+    return cues
+
+
+def load_srt(path: str) -> list[tuple[float, float, str]]:
+    if not path or not os.path.isfile(path):
+        return []
+    with open(path, encoding="utf-8") as handle:
+        return parse_srt(handle.read())
+
+
+def _words_in_window(
+    words: list[str],
+    cue_start: float,
+    cue_end: float,
+    window_start: float,
+    window_end: float,
+) -> list[str]:
+    span = max(cue_end - cue_start, 1e-6)
+    chosen = []
+    for index, word in enumerate(words):
+        midpoint = cue_start + span * (index + 0.5) / len(words)
+        if window_start <= midpoint < window_end:
+            chosen.append(word)
+    return chosen
+
+
+def scenes_from_cues(
+    cues: list[tuple[float, float, str]],
+    clip_seconds: int,
+    *,
+    style: str = "",
+    required_seconds: float = 0,
+) -> list[dict[str, Any]]:
+    """One provider-length clip for each slice of the spoken timeline."""
+    clip = max(1, int(clip_seconds))
+    required = max(float(clip), float(required_seconds or 0))
+    count = max(1, math.ceil(required / clip - 1e-9))
+    scenes = []
+    previous = ""
+    for index in range(count):
+        start = index * clip
+        end = min(required, start + clip)
+        words: list[str] = []
+        for cue_start, cue_end, text in cues:
+            if cue_end <= start or cue_start >= end:
+                continue
+            words.extend(_words_in_window(text.split(), cue_start, cue_end, start, end))
+        spoken = " ".join(words).strip() or (f"Continue showing: {previous}" if previous else "Continue the scene")
+        scene = _scene(index, spoken, style, clip)
+        scene["start"] = round(start, 3)
+        scene["end"] = round(end, 3)
+        scenes.append(scene)
+        previous = spoken
+    return scenes
+
+
+def apply_shot_prompts(
+    scenes: list[dict[str, Any]],
+    style: str,
+    complete: Callable[[str], str] | None,
+) -> list[dict[str, Any]]:
+    """Turn each spoken slice into a shot description. The spoken words stay unchanged."""
+    if not scenes or complete is None:
+        return scenes
+    payload = [{"index": scene["index"], "narration": scene["narration"]} for scene in scenes]
+    prompt = (
+        "Return JSON only: {\"scenes\":[{\"index\":0,\"visual_prompt\":\"...\"}]}. "
+        "Write one text-to-video shot for each narration. Show only what that narration says. "
+        "Do not add subjects from other scenes and do not rewrite the narration. "
+        f"Style: {style or 'cinematic'}. Scenes: {json.dumps(payload, ensure_ascii=False)}"
+    )
+    try:
+        raw = str(complete(prompt) or "")
+        start = raw.find("{")
+        end = raw.rfind("}")
+        parsed = json.loads(raw[start : end + 1]) if start >= 0 and end > start else {}
+    except Exception:
+        return scenes
+    rows = parsed.get("scenes") if isinstance(parsed, dict) else None
+    if not isinstance(rows, list):
+        return scenes
+    shots = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            shots[int(row.get("index"))] = str(row.get("visual_prompt") or row.get("prompt") or "").strip()
+        except (TypeError, ValueError):
+            continue
+    for scene in scenes:
+        visual = shots.get(int(scene["index"]), "")
+        if not visual:
+            continue
+        if style and style.lower() not in visual.lower():
+            visual = f"{style}. {visual}"
+        scene["visual_prompt"] = visual[:1500]
+    return scenes
 
 
 def build_storyboard(

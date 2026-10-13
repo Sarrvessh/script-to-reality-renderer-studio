@@ -314,7 +314,7 @@ def apply_reframe(source: str, crop: dict[str, int], destination: str) -> str:
     command = [
         binary, "-y", "-i", source,
         "-vf", f"crop={w}:{h}:{x}:{y},scale={_even(width)}:{_even(height)}",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", destination,
+        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-an", destination,
     ]
     completed = subprocess.run(command, capture_output=True, text=True)
     if completed.returncode != 0 or not validate_playable(destination).get("playable"):
